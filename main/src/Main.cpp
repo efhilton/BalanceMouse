@@ -35,12 +35,10 @@ esp_err_t InitializeI2C(i2c_port_t i2cNum = I2C_NUM_0)
     return i2cNum;
 }
 
-void shutdownI2c(const i2c_port_t i2_c_port)
+void shutdownI2C(const i2c_port_t i2_c_port)
 {
     i2c_driver_delete(i2_c_port);
 }
-
-void onDataCallback(const uint8_t x, const uint8_t y, const uint8_t z) {}
 
 extern "C" void app_main(void)
 {
@@ -53,7 +51,18 @@ extern "C" void app_main(void)
 
     Hilton::SimpleNotificationService<Hilton::Qmi8658C::DataPoint>::OnDataCallback onData{
         [](const Hilton::Qmi8658C::DataPoint &data) {
-            ESP_LOGI(TAG, "X: %d, Y: %d, Z: %d", data.x, data.y, data.z);
+            ESP_LOGI(
+                TAG,
+                "%02d, %02d, %02d, %02d, %02d, %02d, %02d, %02d, %d02",
+                data.accelerometer.x,
+                data.accelerometer.y,
+                data.accelerometer.z,
+                data.gyroscope.x,
+                data.gyroscope.y,
+                data.gyroscope.z,
+                data.orientation.x,
+                data.orientation.y,
+                data.orientation.z);
         }};
 
     Hilton::SimpleNotificationService<std::string>::OnDataCallback onLog{
@@ -64,11 +73,32 @@ extern "C" void app_main(void)
     qmi8658c.dataCallbackService.addCallback(onData);
     qmi8658c.logCallbackService.addCallback(onLog);
 
-    qmi8658c.initialize();
-    while (true) {
-        qmi8658c.sample();
-        vTaskDelay(pdMS_TO_TICKS(30));
+    esp_err_t init_result = qmi8658c.initialize();
+    if (init_result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize QMI8658C: %s", esp_err_to_name(init_result));
+        shutdownI2C(i2cNum);
+        return;
     }
-    qmi8658c.onTerminate();
-    shutdownI2c(i2cNum);
+
+    // Create a task for handling sensor data
+    xTaskCreate(
+        [](void *arg) {
+            auto *sensor = static_cast<Hilton::Qmi8658C *>(arg);
+            while (true) {
+                sensor->onSample();
+                // Wait for next sample. The delay should match the configured ODR
+                // For 1000Hz ODR, we wait 1ms
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+        },
+        "sensor_task",
+        4096,
+        &qmi8658c,
+        5,
+        nullptr);
+
+    // Main task can do other things or just wait
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Main task heartbeat
+    }
 }
