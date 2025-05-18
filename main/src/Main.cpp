@@ -10,12 +10,12 @@
 #include "freertos/task.h"
 #include "hal/gpio_types.h"
 
-static constexpr const char *TAG{"BALANCE_BOARD"};
+static constexpr auto TAG{"BALANCE_BOARD"};
 static constexpr auto RGB_CONTROL_PIN{GPIO_NUM_14};
 static constexpr auto SDA_PIN{GPIO_NUM_11};
 static constexpr auto SCL_PIN{GPIO_NUM_12};
 
-esp_err_t InitializeI2C(i2c_port_t i2cNum = I2C_NUM_0)
+esp_err_t initializeI2C(i2c_port_t i2cNum = I2C_NUM_0)
 {
     i2c_config_t conf{};
     conf.mode = I2C_MODE_MASTER;
@@ -47,7 +47,7 @@ void shutdownI2C(const i2c_port_t i2_c_port)
 extern "C" void app_main(void)
 {
     constexpr i2c_port_t i2cNum = I2C_NUM_0;
-    const esp_err_t err = InitializeI2C(i2cNum);
+    const esp_err_t err = initializeI2C(i2cNum);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(err));
         return;
@@ -68,7 +68,6 @@ extern "C" void app_main(void)
                 data.orientation.y,
                 data.orientation.z);
         }};
-
 
     ESP_LOGI(TAG, "I2C initialized in %d", i2cNum);
     Hilton::Qmi8658C qmi8658c(i2cNum);
