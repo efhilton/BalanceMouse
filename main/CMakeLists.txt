@@ -1,8 +1,11 @@
 idf_component_register(
         SRCS
+        "src/BluetoothMouseHID.cpp"
+        "src/ChainOfResponsibility.cpp"
+        "src/I2cManager.cpp"
         "src/Main.cpp"
+        "src/MouseEventDetector.cpp"
         "src/Qmi8658C.cpp"
-        "src/MouseEventGenerator.cpp"
 
         INCLUDE_DIRS
         "."

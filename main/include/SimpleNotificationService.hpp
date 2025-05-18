@@ -12,10 +12,12 @@ public:
 
     SimpleNotificationService() = default;
 
-    size_t addCallback(OnDataCallback &callback)
+    int addCallback(OnDataCallback &callback)
     {
-        size_t id = next_id_++;
+        static int nextId{0};
+        const int id = nextId;
         callbacks_[id] = callback;
+        nextId++;
         return id;
     }
 
