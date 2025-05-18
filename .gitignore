@@ -2,3 +2,4 @@
 /sdkconfig.old
 /build/
 /cmake-build-debug-esp-idf/
+/dependencies.lock
