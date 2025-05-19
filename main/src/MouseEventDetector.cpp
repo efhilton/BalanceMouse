@@ -10,6 +10,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "soc/gpio_num.h"
+#include <algorithm>
 
 namespace Hilton {
 
@@ -28,57 +29,114 @@ bool isButtonPressed(const MouseButtonStateMachine &button)
 {
     return button.getState() == MouseButtonStateMachine::State::Pressed;
 }
+bool isButtonIdle(const MouseButtonStateMachine &button)
+{
+    return button.getState() == MouseButtonStateMachine::State::Idle;
+}
+
+ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback clickHandler{
+    [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &context) -> bool {
+        constexpr auto X_PRESSED_THRESHOLD{8.0f}; // degrees
+        constexpr auto X_RELEASED_THRESHOLD(5.0f); // degrees
+        constexpr auto X_DOT_THRESHOLD{25.0f};     // degrees per second
+        constexpr auto Y_PRESSED_THRESHOLD{8.0f};  // degrees
+        constexpr auto Y_RELEASED_THRESHOLD{5.0f}; // degrees
+        constexpr auto Y_DOT_THRESHOLD{25.0f};     // degrees per second
+        constexpr auto Z_START_THRESHOLD{10.0f};   // degrees
+        constexpr auto Z_STOP_THRESHOLD{1.0f};     // degrees
+        constexpr auto X_MOUSE_THRESHOLD{5.0f};    // degrees
+        constexpr auto X_MOUSE_SCALE{6.0f};
+        constexpr auto Y_MOUSE_THRESHOLD{5.0f}; // degrees
+        constexpr auto Y_MOUSE_SCALE{-8.0f};
+
+        const float deltaX = data.tilt.x - context.deltaXFilter.getFilteredValue();
+        const float deltaY = data.tilt.y - context.deltaYFilter.getFilteredValue();
+        const float deltaZ = data.orientation.z - context.deltaZFilter.getFilteredValue();
+        const bool isLeftButtonPressed = isButtonPressed(context.leftButton);
+        const bool isMiddleButtonPressed = isButtonPressed(context.middleButton);
+        const bool isRightButtonPressed = isButtonPressed(context.rightButton);
+        const bool isLeftButtonIdle = isButtonIdle(context.leftButton);
+        const bool isMiddleButtonIdle = isButtonIdle(context.middleButton);
+        const bool isRightButtonIdle = isButtonIdle(context.rightButton);
+        const bool isXButtonActionSpeed = std::abs(deltaX) > X_DOT_THRESHOLD;
+        const bool isYButtonActionSpeed = std::abs(deltaY) > Y_DOT_THRESHOLD;
+
+        if (isXButtonActionSpeed || isYButtonActionSpeed) {
+            if (isXButtonActionSpeed && isLeftButtonPressed && deltaX > -X_RELEASED_THRESHOLD) {
+                context.leftButton.handleEvent(MouseButtonStateMachine::Event::MouseUp);
+            } else if (isXButtonActionSpeed && isRightButtonPressed && deltaX < X_RELEASED_THRESHOLD) {
+                context.rightButton.handleEvent(MouseButtonStateMachine::Event::MouseUp);
+            } else if (isYButtonActionSpeed && isMiddleButtonPressed && deltaY > -Y_RELEASED_THRESHOLD) {
+                context.middleButton.handleEvent(MouseButtonStateMachine::Event::MouseUp);
+            } else if (isLeftButtonIdle && isRightButtonIdle && isMiddleButtonIdle) {
+                if (isXButtonActionSpeed && deltaX > X_PRESSED_THRESHOLD) {
+                    context.rightButton.handleEvent(MouseButtonStateMachine::Event::MouseDown);
+                } else if (isXButtonActionSpeed && deltaX < -X_PRESSED_THRESHOLD) {
+                    context.leftButton.handleEvent(MouseButtonStateMachine::Event::MouseDown);
+                } else if (isYButtonActionSpeed && deltaY < -Y_PRESSED_THRESHOLD) {
+                    context.middleButton.handleEvent(MouseButtonStateMachine::Event::MouseDown);
+                }
+            }
+            context.event.deltaX = 0;
+            context.event.deltaY = 0;
+        } else if (std::abs(deltaX) > X_MOUSE_THRESHOLD || std::abs(deltaY) > Y_MOUSE_THRESHOLD) {
+            const int8_t x = static_cast<int8_t>(
+                std::round(std::clamp(X_MOUSE_SCALE * deltaX, -127.0f, 127.0f)));
+            const int8_t y = static_cast<int8_t>(
+                std::round(std::clamp(Y_MOUSE_SCALE * deltaY, -127.0f, 127.0f)));
+            context.event.deltaX = x;
+            context.event.deltaY = y;
+        } else {
+            context.event.deltaX = 0;
+            context.event.deltaY = 0;
+        }
+
+        if (std::abs(deltaZ) > Z_START_THRESHOLD && !context.isWheelScrolling) {
+            context.isWheelScrolling = true;
+        } else if (std::abs(deltaZ) < Z_STOP_THRESHOLD && context.isWheelScrolling) {
+            context.isWheelScrolling = false;
+        }
+
+        if (context.isWheelScrolling) {
+            float scaledWheel = 2.5f * deltaZ;
+            scaledWheel = std::clamp(scaledWheel, -127.0f, 127.0f);
+            context.event.wheel = static_cast<int8_t>(std::round(scaledWheel));
+        } else {
+            context.event.wheel = 0;
+        }
+
+        context.deltaXFilter.filter(data.tilt.x);
+        context.deltaYFilter.filter(data.tilt.y);
+        context.deltaZFilter.filter(data.orientation.z);
+        return false;
+    }};
 
 ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback
-    movementHandler{
-        [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &event) -> bool {
-            event.event.deltaX = static_cast<int8_t>(data.gyroscope.x);
-            event.event.deltaY = static_cast<int8_t>(data.gyroscope.y);
+    cleanupEventsHandler{
+        [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &context) -> bool {
+            bool isLeftPressed = isButtonPressed(context.leftButton);
+            bool isMiddlePressed = isButtonPressed(context.middleButton);
+            bool isRightPressed = isButtonPressed(context.rightButton);
+            context.event.buttons
+                = (isLeftPressed ? MouseEventDetector::MouseButtonMask::LeftButton : 0)
+                  | (isMiddlePressed ? MouseEventDetector::MouseButtonMask::MiddleButton : 0)
+                  | (isRightPressed ? MouseEventDetector::MouseButtonMask::RightButton : 0);
+
             return false;
         }};
 
-ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback
-    clickHandler{
-
-        [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &event) -> bool {
-            constexpr auto Z_PRESSED_THRESHOLD{10}; // degrees
-            constexpr auto Z_RELEASED_THRESHOLD(2); // degrees
-            constexpr auto Y_PRESSED_THRESHOLD{10}; // degrees
-            constexpr auto Y_RELEASED_THRESHOLD{2}; // degrees
-
-            const float deltaZ = data.orientation.z - event.deltaZFilter.getFilteredValue();
-            const float deltaY = data.orientation.y - event.deltaYFilter.getFilteredValue();
-            // printf(
-            //     "instant: %f, filtered: %f, deltaY: %f\n",
-            //     data.orientation.y,
-            //     event.deltaYFilter.getFilteredValue(),
-            //     deltaY);
-            if (deltaZ > -Z_RELEASED_THRESHOLD && isButtonPressed(event.leftButton)) {
-                event.leftButton.handleEvent(
-                    MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
-
-            } else if (deltaZ < -Z_PRESSED_THRESHOLD) {
-                event.leftButton.handleEvent(
-                    MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
-            }
-            if (deltaZ < Z_RELEASED_THRESHOLD && isButtonPressed(event.rightButton)) {
-                event.rightButton.handleEvent(
-                    MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
-            } else if (deltaZ > Z_PRESSED_THRESHOLD) {
-                event.rightButton.handleEvent(
-                    MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
-            }
-            if (deltaY > -Y_RELEASED_THRESHOLD && isButtonPressed(event.middleButton)) {
-                event.middleButton.handleEvent(
-                    MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
-            } else if (deltaY < -Y_PRESSED_THRESHOLD) {
-                event.middleButton.handleEvent(
-                    MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
-            }
-            event.deltaZFilter.filter(data.orientation.z);
-            event.deltaYFilter.filter(data.orientation.y);
-            return false;
-        }};
+ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback printStats{
+    [](const Qmi8658C::DataPoint &data, const MouseEventDetector::TrackingContext &context) -> bool {
+        printf(
+            "(x,y):(%4d,%4d), W: %4d, L:%-15s, M:%-15s, R:%-15s\n",
+            context.event.deltaX,
+            context.event.deltaY,
+            context.event.wheel,
+            context.leftButton.getStateName().c_str(),
+            context.middleButton.getStateName().c_str(),
+            context.rightButton.getStateName().c_str());
+        return true;
+    }};
 
 MouseEventDetector::MouseEventDetector(
     const std::shared_ptr<Qmi8658C> &qmi8658C, const gpio_num_t int1Pin, const gpio_num_t int2Pin)
@@ -101,21 +159,12 @@ MouseEventDetector::MouseEventDetector(
     gpio_isr_handler_add(int1Pin, gpioIsrHandler, this);
     gpio_isr_handler_add(int2Pin, gpioIsrHandler, this);
 
-    chainOfResponsibility.addHandler(movementHandler);
+    // chainOfResponsibility.addHandler(movementHandler);
     chainOfResponsibility.addHandler(clickHandler);
+    chainOfResponsibility.addHandler(cleanupEventsHandler);
+    chainOfResponsibility.addHandler(printStats);
     onDataCallback = [this](const Qmi8658C::DataPoint &data) {
         getChainOfResponsibility().handle(data, trackingContext);
-        // printf(
-        //     "%6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f\n",
-        //     data.accelerometer.x,
-        //     data.accelerometer.y,
-        //     data.accelerometer.z,
-        //     data.gyroscope.x,
-        //     data.gyroscope.y,
-        //     data.gyroscope.z,
-        //     data.orientation.x,
-        //     data.orientation.y,
-        //     data.orientation.z);
     };
 }
 

@@ -6,8 +6,8 @@
 #include <Qmi8658C.hpp>
 
 #include "ChainOfResponsibility.hpp"
-#include <MouseButtonStateMachine.hpp>
 #include <HighPassFilter.hpp>
+#include <MouseButtonStateMachine.hpp>
 
 namespace Hilton {
 class MouseEventDetector
@@ -53,8 +53,7 @@ public:
         uint8_t event;
         int8_t deltaX; // -128 to 127
         int8_t deltaY; // -128 to 127
-        int8_t wheelX; // -128 to 127
-        int8_t wheelY; // -128 to 127
+        int8_t wheel; // -128 to 127
     };
 
     using TrackingContext = struct
@@ -62,8 +61,10 @@ public:
         MouseButtonStateMachine leftButton{"L"};
         MouseButtonStateMachine rightButton{"R"};
         MouseButtonStateMachine middleButton{"M"};
-        HighPassFilter deltaZFilter{.01f};
-        HighPassFilter deltaYFilter{.01f};
+        bool isWheelScrolling{false};
+        HighPassFilter deltaXFilter{.001f};
+        HighPassFilter deltaYFilter{.001f};
+        HighPassFilter deltaZFilter{.001f};
         MouseEvent event{};
     };
 
@@ -86,7 +87,6 @@ private:
     static constexpr auto TAG{"MOUSE_EVENT_DETECTOR"};
 
     std::shared_ptr<Qmi8658C> qmi8658c;
-    // SimpleNotificationService<Qmi8658C::DataPoint>::OnDataCallback onDataCallback;
     gpio_num_t int1Pin;
     gpio_num_t int2Pin;
     EventGroupHandle_t eventGroup;

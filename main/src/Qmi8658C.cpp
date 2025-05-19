@@ -181,11 +181,14 @@ void Qmi8658C::onSample()
         static_cast<float>(static_cast<int16_t>((data[7] << 8) | data[6])) * GYRO_SCALE,   // X
         static_cast<float>(static_cast<int16_t>((data[9] << 8) | data[8])) * GYRO_SCALE,   // Y
         static_cast<float>(static_cast<int16_t>((data[11] << 8) | data[10])) * GYRO_SCALE  // Z
-    },
-    .orientation{0,0,0}
+    },.acceleration{0,0,0},
+    .orientation{0,0,0},
+        .tilt{0,0,0}
 };
 
-    point.orientation = integrateGyroToOrientation(point.gyroscope);
+    populateAcceleration(point);
+    populateOrientation(point);
+    populateTilt(point);
 
     dataCallbackService.notify(point);
 }
@@ -201,28 +204,73 @@ void Qmi8658C::onTerminate() const
     ESP_LOGI(TAG, "Terminated QMI8658C sensor");
 }
 
-Qmi8658C::Point Qmi8658C::integrateGyroToOrientation(const Point &gyro)
+void Qmi8658C::populateAcceleration(DataPoint &point)
 {
-    static Point angles = {0, 0, 0};
     static int64_t lastTime = esp_timer_get_time();
     const int64_t currentTime = esp_timer_get_time();
-
     const float deltaTime = static_cast<float>(currentTime - lastTime) / 1000000.0f;
     lastTime = currentTime;
 
-    // Convert raw gyro data to degrees per second (±2000 dps range)
+    // Calculate angular acceleration as the rate of change of angular velocity
+    point.acceleration.x = (point.gyroscope.x - lastGyro.x) / deltaTime;
+    point.acceleration.y = (point.gyroscope.y - lastGyro.y) / deltaTime;
+    point.acceleration.z = (point.gyroscope.z - lastGyro.z) / deltaTime;
+
+    // Update last gyroscope values for next iteration
+    lastGyro = point.gyroscope;
+}
+
+void Qmi8658C::populateTilt(DataPoint &point)
+{
+    constexpr float g = 9.81f; // Convert from m/s^2 to g units
+    const float ax = point.accelerometer.x / g;
+    const float ay = point.accelerometer.y / g;
+    const float az = point.accelerometer.z / g;
+
+    // Calculate roll angle (rotation around X-axis)
+    point.tilt.x = atan2(ay, az);
+
+    // Calculate pitch angle (rotation around Y-axis)
+    point.tilt.y = atan2(-ax, sqrt(ay * ay + az * az));
+
+    // Convert radians to degrees
+    point.tilt.x *= 180.0f / M_PI;
+    point.tilt.y *= 180.0f / M_PI;
+    point.tilt.z = 0; // Can't determine yaw from accelerometer alone
+}
+
+void Qmi8658C::populateOrientation(DataPoint &point)
+{
+    constexpr float ALPHA = 0.98f;
+    static int64_t lastTime = esp_timer_get_time();
+    const int64_t currentTime = esp_timer_get_time();
+    const float deltaTime = static_cast<float>(currentTime - lastTime) / 1000000.0f;
+    lastTime = currentTime;
 
     // Integrate gyro data to get angles
-    angles.x += gyro.x * deltaTime;
-    angles.y += gyro.y * deltaTime;
-    angles.z += gyro.z * deltaTime;
+    orientation.x += point.gyroscope.x * deltaTime;
+    orientation.y += point.gyroscope.y * deltaTime;
+    orientation.z += point.gyroscope.z * deltaTime;
 
-    // Normalize angles to -180 to +180 degrees
-    angles.x = fmod(angles.x + 180.0f, 360.0f) - 180.0f;
-    angles.y = fmod(angles.y + 180.0f, 360.0f) - 180.0f;
-    angles.z = fmod(angles.z + 180.0f, 360.0f) - 180.0f;
+    // Use accelerometer to estimate tilt (roll and pitch)
+    const float accelPitch = atan2(
+        point.accelerometer.x,
+        static_cast<float>(sqrt(
+            point.accelerometer.y * point.accelerometer.y
+            + point.accelerometer.z * point.accelerometer.z)));
+    const float accelRoll = atan2(
+        point.accelerometer.y,
+        static_cast<float>(sqrt(
+            point.accelerometer.x * point.accelerometer.x
+            + point.accelerometer.z * point.accelerometer.z)));
 
-    return angles;
+    // Correct gyroscope orientation using the accelerometer (complementary filter)
+    orientation.x = ALPHA * orientation.x + (1 - ALPHA) * accelPitch;
+    orientation.y = ALPHA * orientation.y + (1 - ALPHA) * accelRoll;
+
+    point.orientation.x = orientation.x;
+    point.orientation.y = orientation.y;
+    point.orientation.z = orientation.z;
 }
 
 } // namespace Hilton

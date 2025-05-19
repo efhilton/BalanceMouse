@@ -8,7 +8,7 @@ class Qmi8658C
 {
 public:
     static constexpr auto TAG{"QMI8658C"};
-   
+
     // @brief  device address
     static constexpr uint8_t QMI8658_L_SLAVE_ADDRESS{0x6B};
     static constexpr uint8_t QMI8658_H_SLAVE_ADDRESS{0x6A};
@@ -120,6 +120,21 @@ public:
 
     static constexpr uint8_t QMI8658_FIFO_MAP_INT1{0x04}; // ctrl1
 
+    struct Point
+    {
+        float x;
+        float y;
+        float z;
+    };
+    struct DataPoint
+    {
+        Point accelerometer;  // Linear acceleration, from sensor.
+        Point gyroscope;      // Angular speed, from sensor.
+        Point acceleration;   // Angular acceleration, calculated.
+        Point orientation;    // Orientation (angle), calculated
+        Point tilt;           // Tilt (angle), calculated
+    };
+
 private:
     i2c_port_t i2cPort;
 
@@ -129,26 +144,17 @@ private:
     esp_err_t readMultipleRegs(uint8_t startReg, uint8_t *data, size_t len) const;
 
 public:
-    struct Point
-    {
-        float x;
-        float y;
-        float z;
-    };
-    struct DataPoint
-    {
-        Point accelerometer;
-        Point gyroscope;
-        Point orientation;
-    };
-
     explicit Qmi8658C(i2c_port_t i2CPort);
     esp_err_t initialize() const;
     esp_err_t disableAllSensors() const;
     void onTerminate() const;
-    static Point integrateGyroToOrientation(const Point &point);
+    void populateAcceleration(DataPoint &point);
+    static void populateTilt(DataPoint &point);
+    void populateOrientation(DataPoint &point);
     void onSample();
     esp_err_t configure() const;
     SimpleNotificationService<DataPoint> dataCallbackService{};
+    Point orientation{};
+    Point lastGyro{};
 };
 } // namespace Hilton

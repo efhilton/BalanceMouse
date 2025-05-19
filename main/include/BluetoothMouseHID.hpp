@@ -24,7 +24,7 @@ public:
 
 private:
     // Sends raw HID report over Bluetooth (implementation platform-specific)
-    void sendHIDReport(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheelX, int8_t wheelY);
+    void sendHIDReport(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheelX);
 
     // Internal state, connection handle, etc (platform-specific)
     // Example: int btConnectionHandle;
