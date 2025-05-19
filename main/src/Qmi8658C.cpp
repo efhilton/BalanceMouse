@@ -77,7 +77,7 @@ esp_err_t Qmi8658C::configure() const
     }
 
     // First configure CTRL1 - Enable timestamp (bit 6) and enable motion (bit 5)
-    constexpr uint8_t ctrl1Value{0b01100000};
+    constexpr uint8_t ctrl1Value{BIT5 | BIT6};
     err = writeReg(QMI8658_REG_CTRL1, ctrl1Value);
     if (err != ESP_OK) {
         return err;
@@ -113,6 +113,14 @@ esp_err_t Qmi8658C::configure() const
         return err;
     }
 
+    // // Enable data ready interrupt
+    // constexpr uint8_t motionDetectionValue{0x00};
+    // err = writeReg(QMI8658_REG_CTRL8, motionDetectionValue);
+    // if (err != ESP_OK) {
+    //     ESP_LOGE(TAG, "Failed to enable data ready interrupt: %s", esp_err_to_name(err));
+    //     return err;
+    // }
+
     // Enable both accelerometer and gyroscope
     err = writeReg(QMI8658_REG_CTRL7, QMI8658_ACCEL_EN_MASK | QMI8658_GYRO_EN_MASK);
     if (err != ESP_OK) {
@@ -120,25 +128,24 @@ esp_err_t Qmi8658C::configure() const
         return err;
     }
 
-    // // Enable data ready interrupt
-    // err = writeReg(QMI8658_REG_CTRL8, QMI8658_FIFO_MAP_INT1);
-    // if (err != ESP_OK) {
-    //     ESP_LOGE(TAG, "Failed to enable data ready interrupt: %s", esp_err_to_name(err));
-    //     return err;
-    // }
-
-    uint8_t ctrl1, ctrl2, ctrl3, ctrl7;
+    uint8_t ctrl1, ctrl2, ctrl3, ctrl7, ctrl8;
     readReg(QMI8658_REG_CTRL1, &ctrl1);
     readReg(QMI8658_REG_CTRL2, &ctrl2);
     readReg(QMI8658_REG_CTRL3, &ctrl3);
     readReg(QMI8658_REG_CTRL7, &ctrl7);
+    readReg(QMI8658_REG_CTRL8, &ctrl8);
+
     ESP_LOGI(
         TAG,
-        "After config\n\tCTRL1: 0x%02X\n\tCTRL2: 0x%02X\n\tCTRL3: 0x%02X\n\tCTRL7: 0x%02X",
+        "After config\n\tCTRL1: 0x%02X\n\tCTRL2: 0x%02X\n\tCTRL3: 0x%02X\n\tCTRL7: "
+        "0x%02X\n\tCTRL8: 0x%02X",
         ctrl1,
         ctrl2,
         ctrl3,
-        ctrl7);
+        ctrl7,
+        ctrl8);
+
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     return ESP_OK;
 }
@@ -162,8 +169,8 @@ void Qmi8658C::onSample()
     }
 
     // Convert raw data to sensor values
-    constexpr float ACCEL_SCALE{-2.0f * 9.81 / 32768.0f};  // For ±2G range, in m/s^2
-    constexpr float GYRO_SCALE{128.0f / 32768.0f}; // For ±128DPS range
+    constexpr float ACCEL_SCALE{-2.0f * 9.81 / 32768.0f}; // For ±2G range, in m/s^2
+    constexpr float GYRO_SCALE{128.0f / 32768.0f};        // For ±128DPS range
     DataPoint point{
     .accelerometer = {
         static_cast<float>(static_cast<int16_t>((data[1] << 8) | data[0])) * ACCEL_SCALE,  // X

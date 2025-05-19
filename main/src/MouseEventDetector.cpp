@@ -1,4 +1,4 @@
-#include <MouseEventDetector.hpp>
+#include "MouseEventDetector.hpp"
 #include <memory>
 #include <string>
 #include <Qmi8658C.hpp>
@@ -17,17 +17,75 @@ enum DetectorEventMask { SHUTDOWN_EVENT = BIT0, DATA_AVAILABLE = BIT1 };
 void MouseEventDetector::gpioIsrHandler(void *p)
 {
     const auto *self = static_cast<MouseEventDetector *>(p);
-    xEventGroupSetBitsFromISR(self->eventGroup, DATA_AVAILABLE, nullptr);
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xEventGroupSetBitsFromISR(self->eventGroup, DATA_AVAILABLE, &xHigherPriorityTaskWoken);
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
 }
+
+bool isButtonPressed(const MouseButtonStateMachine &button)
+{
+    return button.getState() == MouseButtonStateMachine::State::Pressed;
+}
+
+ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback
+    movementHandler{
+        [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &event) -> bool {
+            event.event.deltaX = static_cast<int8_t>(data.gyroscope.x);
+            event.event.deltaY = static_cast<int8_t>(data.gyroscope.y);
+            return false;
+        }};
+
+ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback
+    clickHandler{
+
+        [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &event) -> bool {
+            constexpr auto Z_PRESSED_THRESHOLD{10}; // degrees
+            constexpr auto Z_RELEASED_THRESHOLD(2); // degrees
+            constexpr auto Y_PRESSED_THRESHOLD{20}; // degrees per sec
+
+            const float deltaZ = data.orientation.z - event.deltaZFilter.getFilteredValue();
+            // printf(
+            //     "instant: %f, filtered: %f, deltaZ: %f\n",
+            //     data.orientation.z,
+            //     event.deltaZFilter.getFilteredValue(),
+            //     deltaZ);
+            if (deltaZ > -Z_RELEASED_THRESHOLD && isButtonPressed(event.leftButton)) {
+                event.leftButton.handleEvent(
+                    MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
+
+            } else if (deltaZ < -Z_PRESSED_THRESHOLD) {
+                event.leftButton.handleEvent(
+                    MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
+            }
+            if (deltaZ < Z_RELEASED_THRESHOLD && isButtonPressed(event.rightButton)) {
+                event.rightButton.handleEvent(
+                    MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
+            } else if (deltaZ > Z_PRESSED_THRESHOLD) {
+                event.rightButton.handleEvent(
+                    MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
+            }
+            // event.leftButton.handleEvent(
+            //     MouseButtonStateMachine::Event::MouseMove, data.gyroscope.x, data.gyroscope.y);
+            // event.rightButton.handleEvent(
+            //     MouseButtonStateMachine::Event::MouseMove, data.gyroscope.x, data.gyroscope.y);
+            // event.middleButton.handleEvent(
+            //     MouseButtonStateMachine::Event::MouseMove, data.gyroscope.x, data.gyroscope.y);
+            event.deltaZFilter.filter(data.orientation.z);
+            return false;
+        }};
 
 MouseEventDetector::MouseEventDetector(
     const std::shared_ptr<Qmi8658C> &qmi8658C, const gpio_num_t int1Pin, const gpio_num_t int2Pin)
     : qmi8658c(qmi8658C)
-    , onDataCallback([this](const Qmi8658C::DataPoint &data) { analyze(data); })
     , int1Pin(int1Pin)
     , int2Pin(int2Pin)
     , eventGroup(xEventGroupCreate())
 {
+    gpio_reset_pin(int1Pin);
+    gpio_reset_pin(int2Pin);
+
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_ANYEDGE;
     io_conf.pin_bit_mask = (1ULL << int1Pin) | (1ULL << int2Pin);
@@ -38,12 +96,27 @@ MouseEventDetector::MouseEventDetector(
     gpio_install_isr_service(0);
     gpio_isr_handler_add(int1Pin, gpioIsrHandler, this);
     gpio_isr_handler_add(int2Pin, gpioIsrHandler, this);
+
+    chainOfResponsibility.addHandler(movementHandler);
+    chainOfResponsibility.addHandler(clickHandler);
+    onDataCallback = [this](const Qmi8658C::DataPoint &data) {
+        getChainOfResponsibility().handle(data, trackingContext);
+        // printf(
+        //     "%6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f, %6.2f\n",
+        //     data.accelerometer.x,
+        //     data.accelerometer.y,
+        //     data.accelerometer.z,
+        //     data.gyroscope.x,
+        //     data.gyroscope.y,
+        //     data.gyroscope.z,
+        //     data.orientation.x,
+        //     data.orientation.y,
+        //     data.orientation.z);
+    };
 }
 
 void MouseEventDetector::run()
 {
-    static bool isRunning{false};
-
     if (isRunning) {
         return;
     }
@@ -71,7 +144,7 @@ void MouseEventDetector::run()
                     DATA_AVAILABLE | SHUTDOWN_EVENT,
                     pdTRUE,
                     pdFALSE,
-                    portMAX_DELAY);
+                    pdMS_TO_TICKS(34));
                 const uint8_t bitsSet = xEventGroupGetBits(self->eventGroup);
 
                 if (bitsSet & SHUTDOWN_EVENT) {
@@ -79,8 +152,9 @@ void MouseEventDetector::run()
                     continue;
                 }
                 if (bitsSet & DATA_AVAILABLE) {
-                    self->qmi8658c->onSample();
+                    ESP_LOGE(self->TAG, "DATA_AVAILABLE");
                 }
+                self->qmi8658c->onSample();
             }
         },
         "board_analitics",
@@ -91,19 +165,5 @@ void MouseEventDetector::run()
 
     isRunning = true;
 }
-void MouseEventDetector::analyze(const Qmi8658C::DataPoint &data)
-{
-    ESP_LOGI(
-        MouseEventDetector::TAG,
-        "%05.2f, %05.2f, %05.2f, %05.2f, %05.2f, %05.2f, %05.2f, %05.2f, %05.2f",
-        data.accelerometer.x,
-        data.accelerometer.y,
-        data.accelerometer.z,
-        data.gyroscope.x,
-        data.gyroscope.y,
-        data.gyroscope.z,
-        data.orientation.x,
-        data.orientation.y,
-        data.orientation.z);
-}
+
 } // namespace Hilton
