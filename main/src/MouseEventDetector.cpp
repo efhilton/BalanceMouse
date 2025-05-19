@@ -43,14 +43,16 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
         [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &event) -> bool {
             constexpr auto Z_PRESSED_THRESHOLD{10}; // degrees
             constexpr auto Z_RELEASED_THRESHOLD(2); // degrees
-            constexpr auto Y_PRESSED_THRESHOLD{20}; // degrees per sec
+            constexpr auto Y_PRESSED_THRESHOLD{10}; // degrees
+            constexpr auto Y_RELEASED_THRESHOLD{2}; // degrees
 
             const float deltaZ = data.orientation.z - event.deltaZFilter.getFilteredValue();
+            const float deltaY = data.orientation.y - event.deltaYFilter.getFilteredValue();
             // printf(
-            //     "instant: %f, filtered: %f, deltaZ: %f\n",
-            //     data.orientation.z,
-            //     event.deltaZFilter.getFilteredValue(),
-            //     deltaZ);
+            //     "instant: %f, filtered: %f, deltaY: %f\n",
+            //     data.orientation.y,
+            //     event.deltaYFilter.getFilteredValue(),
+            //     deltaY);
             if (deltaZ > -Z_RELEASED_THRESHOLD && isButtonPressed(event.leftButton)) {
                 event.leftButton.handleEvent(
                     MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
@@ -66,13 +68,15 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
                 event.rightButton.handleEvent(
                     MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
             }
-            // event.leftButton.handleEvent(
-            //     MouseButtonStateMachine::Event::MouseMove, data.gyroscope.x, data.gyroscope.y);
-            // event.rightButton.handleEvent(
-            //     MouseButtonStateMachine::Event::MouseMove, data.gyroscope.x, data.gyroscope.y);
-            // event.middleButton.handleEvent(
-            //     MouseButtonStateMachine::Event::MouseMove, data.gyroscope.x, data.gyroscope.y);
+            if (deltaY > -Y_RELEASED_THRESHOLD && isButtonPressed(event.middleButton)) {
+                event.middleButton.handleEvent(
+                    MouseButtonStateMachine::Event::MouseUp, data.gyroscope.x, data.gyroscope.y);
+            } else if (deltaY < -Y_PRESSED_THRESHOLD) {
+                event.middleButton.handleEvent(
+                    MouseButtonStateMachine::Event::MouseDown, data.gyroscope.x, data.gyroscope.y);
+            }
             event.deltaZFilter.filter(data.orientation.z);
+            event.deltaYFilter.filter(data.orientation.y);
             return false;
         }};
 

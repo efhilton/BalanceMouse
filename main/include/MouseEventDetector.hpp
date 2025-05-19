@@ -63,6 +63,7 @@ public:
         MouseButtonStateMachine rightButton{"R"};
         MouseButtonStateMachine middleButton{"M"};
         HighPassFilter deltaZFilter{.01f};
+        HighPassFilter deltaYFilter{.01f};
         MouseEvent event{};
     };
 
