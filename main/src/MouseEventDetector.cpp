@@ -36,18 +36,18 @@ bool isButtonIdle(const MouseButtonStateMachine &button)
 
 ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback clickHandler{
     [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &context) -> bool {
-        constexpr auto X_PRESSED_THRESHOLD{8.0f}; // degrees
-        constexpr auto X_RELEASED_THRESHOLD(5.0f); // degrees
-        constexpr auto X_DOT_THRESHOLD{25.0f};     // degrees per second
-        constexpr auto Y_PRESSED_THRESHOLD{8.0f};  // degrees
-        constexpr auto Y_RELEASED_THRESHOLD{5.0f}; // degrees
-        constexpr auto Y_DOT_THRESHOLD{25.0f};     // degrees per second
+        constexpr auto X_PRESSED_THRESHOLD{10.0f}; // degrees
+        constexpr auto X_RELEASED_THRESHOLD(2.0f); // degrees
+        constexpr auto X_DOT_THRESHOLD{45.0f};     // degrees per second
+        constexpr auto Y_PRESSED_THRESHOLD{10.0f}; // degrees
+        constexpr auto Y_RELEASED_THRESHOLD{2.0f}; // degrees
+        constexpr auto Y_DOT_THRESHOLD{45.0f};     // degrees per second
         constexpr auto Z_START_THRESHOLD{10.0f};   // degrees
         constexpr auto Z_STOP_THRESHOLD{1.0f};     // degrees
-        constexpr auto X_MOUSE_THRESHOLD{5.0f};    // degrees
-        constexpr auto X_MOUSE_SCALE{6.0f};
-        constexpr auto Y_MOUSE_THRESHOLD{5.0f}; // degrees
-        constexpr auto Y_MOUSE_SCALE{-8.0f};
+        constexpr auto X_MOUSE_THRESHOLD{3.0f};    // degrees
+        constexpr auto X_MOUSE_SCALE{7.0f};        // ints/degree
+        constexpr auto Y_MOUSE_THRESHOLD{3.0f};    // degrees
+        constexpr auto Y_MOUSE_SCALE{-8.0f};       // ints/degree
 
         const float deltaX = data.tilt.x - context.deltaXFilter.getFilteredValue();
         const float deltaY = data.tilt.y - context.deltaYFilter.getFilteredValue();
@@ -58,8 +58,8 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
         const bool isLeftButtonIdle = isButtonIdle(context.leftButton);
         const bool isMiddleButtonIdle = isButtonIdle(context.middleButton);
         const bool isRightButtonIdle = isButtonIdle(context.rightButton);
-        const bool isXButtonActionSpeed = std::abs(deltaX) > X_DOT_THRESHOLD;
-        const bool isYButtonActionSpeed = std::abs(deltaY) > Y_DOT_THRESHOLD;
+        const bool isXButtonActionSpeed = std::abs(data.gyroscope.x) > X_DOT_THRESHOLD;
+        const bool isYButtonActionSpeed = std::abs(data.gyroscope.y) > Y_DOT_THRESHOLD;
 
         if (isXButtonActionSpeed || isYButtonActionSpeed) {
             if (isXButtonActionSpeed && isLeftButtonPressed && deltaX > -X_RELEASED_THRESHOLD) {
@@ -128,7 +128,7 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
 ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>::Callback printStats{
     [](const Qmi8658C::DataPoint &data, const MouseEventDetector::TrackingContext &context) -> bool {
         printf(
-            "(x,y):(%4d,%4d), W: %4d, L:%-15s, M:%-15s, R:%-15s\n",
+            "(X,Y):(%4d,%4d), W: %4d, L:%-15s, M:%-15s, R:%-15s\n",
             context.event.deltaX,
             context.event.deltaY,
             context.event.wheel,
