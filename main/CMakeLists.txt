@@ -1,6 +1,6 @@
 idf_component_register(
         SRCS
-        "src/BluetoothMouseHID.cpp"
+        "src/TinyUsbHID.cpp"
         "src/ChainOfResponsibility.cpp"
         "src/I2cManager.cpp"
         "src/Main.cpp"

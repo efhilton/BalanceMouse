@@ -145,7 +145,7 @@ MouseEventDetector::MouseEventDetector(
     : qmi8658c(qmi8658C)
     , int1Pin(int1Pin)
     , int2Pin(int2Pin)
-    , eventGroup(xEventGroupCreate())
+    , eventCallbackService(10, "EventsCallbackTask")
 {
     gpio_reset_pin(int1Pin);
     gpio_reset_pin(int2Pin);

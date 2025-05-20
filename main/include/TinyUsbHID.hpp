@@ -1,17 +1,16 @@
 #pragma once
 
-#include "MouseEventDetector.hpp"
-
+#include <MouseEventDetector.hpp>
 #include <cstdint>
 
 namespace Hilton {
 
 
-class BluetoothMouseHID
+class TinyUsbHID
 {
 public:
-    BluetoothMouseHID();
-    ~BluetoothMouseHID();
+    TinyUsbHID();
+    ~TinyUsbHID();
 
     // Call to initialize and enable the Bluetooth mouse device
     bool begin();

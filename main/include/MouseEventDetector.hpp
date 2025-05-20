@@ -2,28 +2,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "soc/gpio_num.h"
-#include <memory>
-#include <Qmi8658C.hpp>
-
-#include "ChainOfResponsibility.hpp"
+#include <ChainOfResponsibility.hpp>
 #include <HighPassFilter.hpp>
 #include <MouseButtonStateMachine.hpp>
-
+#include <memory>
+#include <Qmi8658C.hpp>
+#include <QueuedNotificationService.hpp>
 namespace Hilton {
 class MouseEventDetector
 {
 public:
-    enum MouseButtonMask { LeftButton = 0x01, RightButton = 0x02, MiddleButton = 0x04 };
-    enum MouseEventMask {
-        ButtonDown = 0x01,
-        ButtonUp = 0x02,
-        ButtonClick = 0x04,
-        ButtonDoubleClick = 0x08,
-        ButtonTripleClick = 0x10,
-        ButtonDrag = 0x20,
-        Movement = 0x40,
-        Wheel = 0x80,
-    };
+    enum MouseButtonMask { LeftButton = 0x01, RightButton = 0x02, MiddleButton = 0x04 , WheelButton = 0x08 };
 
     /** Mouse events: The series of detected mouse events.
      * Each event is a combination of the following:
@@ -50,7 +39,6 @@ public:
     struct MouseEvent
     {
         uint8_t buttons;
-        uint8_t event;
         int8_t deltaX; // -128 to 127
         int8_t deltaY; // -128 to 127
         int8_t wheel; // -128 to 127
@@ -69,8 +57,6 @@ public:
     };
 
     ~MouseEventDetector() = default;
-
-    SimpleNotificationService<MouseEvent> eventCallbackService{};
 
     static void gpioIsrHandler(void *p);
     SimpleNotificationService<Qmi8658C::DataPoint>::OnDataCallback onDataCallback;
@@ -94,5 +80,7 @@ private:
 
     ChainOfResponsibility<Qmi8658C::DataPoint, TrackingContext> chainOfResponsibility;
     TrackingContext trackingContext;
+
+    QueuedNotificationService<MouseEvent> eventCallbackService;
 };
 } // namespace Hilton
