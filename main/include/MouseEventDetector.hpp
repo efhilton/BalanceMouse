@@ -64,7 +64,7 @@ public:
         bool isWheelScrolling{false};
         HighPassFilter deltaXFilter{.001f};
         HighPassFilter deltaYFilter{.001f};
-        HighPassFilter deltaZFilter{.001f};
+        HighPassFilter deltaZFilter{.00001f};
         MouseEvent event{};
     };
 

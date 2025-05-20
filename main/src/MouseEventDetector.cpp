@@ -38,15 +38,15 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
     [](const Qmi8658C::DataPoint &data, MouseEventDetector::TrackingContext &context) -> bool {
         constexpr auto X_PRESSED_THRESHOLD{10.0f}; // degrees
         constexpr auto X_RELEASED_THRESHOLD(2.0f); // degrees
-        constexpr auto X_DOT_THRESHOLD{45.0f};     // degrees per second
+        constexpr auto X_DOT_THRESHOLD{55.0f};     // degrees per second
         constexpr auto Y_PRESSED_THRESHOLD{10.0f}; // degrees
         constexpr auto Y_RELEASED_THRESHOLD{2.0f}; // degrees
-        constexpr auto Y_DOT_THRESHOLD{45.0f};     // degrees per second
+        constexpr auto Y_DOT_THRESHOLD{55.0f};     // degrees per second
         constexpr auto Z_START_THRESHOLD{10.0f};   // degrees
         constexpr auto Z_STOP_THRESHOLD{1.0f};     // degrees
-        constexpr auto X_MOUSE_THRESHOLD{3.0f};    // degrees
+        constexpr auto X_MOUSE_THRESHOLD{2.0f};    // degrees
         constexpr auto X_MOUSE_SCALE{7.0f};        // ints/degree
-        constexpr auto Y_MOUSE_THRESHOLD{3.0f};    // degrees
+        constexpr auto Y_MOUSE_THRESHOLD{2.0f};    // degrees
         constexpr auto Y_MOUSE_SCALE{-8.0f};       // ints/degree
 
         const float deltaX = data.tilt.x - context.deltaXFilter.getFilteredValue();
@@ -61,7 +61,13 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
         const bool isXButtonActionSpeed = std::abs(data.gyroscope.x) > X_DOT_THRESHOLD;
         const bool isYButtonActionSpeed = std::abs(data.gyroscope.y) > Y_DOT_THRESHOLD;
 
-        if (isXButtonActionSpeed || isYButtonActionSpeed) {
+        if (std::abs(deltaZ) > Z_START_THRESHOLD && !context.isWheelScrolling) {
+            context.isWheelScrolling = true;
+        } else if (std::abs(deltaZ) < Z_STOP_THRESHOLD && context.isWheelScrolling) {
+            context.isWheelScrolling = false;
+        }
+
+        if (!context.isWheelScrolling && (isXButtonActionSpeed || isYButtonActionSpeed)) {
             if (isXButtonActionSpeed && isLeftButtonPressed && deltaX > -X_RELEASED_THRESHOLD) {
                 context.leftButton.handleEvent(MouseButtonStateMachine::Event::MouseUp);
             } else if (isXButtonActionSpeed && isRightButtonPressed && deltaX < X_RELEASED_THRESHOLD) {
@@ -79,29 +85,25 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
             }
             context.event.deltaX = 0;
             context.event.deltaY = 0;
-        } else if (std::abs(deltaX) > X_MOUSE_THRESHOLD || std::abs(deltaY) > Y_MOUSE_THRESHOLD) {
+        } else if (
+            !context.isWheelScrolling
+            && (std::abs(deltaX) > X_MOUSE_THRESHOLD || std::abs(deltaY) > Y_MOUSE_THRESHOLD)) {
             const int8_t x = static_cast<int8_t>(
                 std::round(std::clamp(X_MOUSE_SCALE * deltaX, -127.0f, 127.0f)));
             const int8_t y = static_cast<int8_t>(
                 std::round(std::clamp(Y_MOUSE_SCALE * deltaY, -127.0f, 127.0f)));
             context.event.deltaX = x;
             context.event.deltaY = y;
-        } else {
-            context.event.deltaX = 0;
-            context.event.deltaY = 0;
-        }
-
-        if (std::abs(deltaZ) > Z_START_THRESHOLD && !context.isWheelScrolling) {
-            context.isWheelScrolling = true;
-        } else if (std::abs(deltaZ) < Z_STOP_THRESHOLD && context.isWheelScrolling) {
-            context.isWheelScrolling = false;
-        }
-
-        if (context.isWheelScrolling) {
+            context.event.wheel = 0;
+        } else if (context.isWheelScrolling) {
             float scaledWheel = 2.5f * deltaZ;
             scaledWheel = std::clamp(scaledWheel, -127.0f, 127.0f);
             context.event.wheel = static_cast<int8_t>(std::round(scaledWheel));
+            context.event.deltaX = 0;
+            context.event.deltaY = 0;
         } else {
+            context.event.deltaX = 0;
+            context.event.deltaY = 0;
             context.event.wheel = 0;
         }
 
