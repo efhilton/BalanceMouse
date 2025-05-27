@@ -52,7 +52,7 @@ public:
         bool isWheelScrolling{false};
         HighPassFilter deltaXFilter{.001f};
         HighPassFilter deltaYFilter{.001f};
-        HighPassFilter deltaZFilter{.00001f};
+        HighPassFilter deltaZFilter{.001f};
         MouseEvent event{};
     };
 
@@ -76,7 +76,7 @@ private:
     gpio_num_t int1Pin;
     gpio_num_t int2Pin;
     EventGroupHandle_t eventGroup;
-    bool isRunning{false};
+    bool isRunning;
 
     ChainOfResponsibility<Qmi8658C::DataPoint, TrackingContext> chainOfResponsibility;
     TrackingContext trackingContext;

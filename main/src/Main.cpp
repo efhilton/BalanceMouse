@@ -69,7 +69,7 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "QMI8658C initialized");
 
     ESP_LOGI(TAG, "Initializing Balance Board analytics");
-    std::shared_ptr<Hilton::MouseEventDetector> mouseEventDetector
+    const auto mouseEventDetector
         = std::make_shared<Hilton::MouseEventDetector>(qmi8658c, config.int1_pin, config.int2_pin);
 
     mouseEventDetector->run();
