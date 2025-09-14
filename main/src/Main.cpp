@@ -4,6 +4,7 @@
 #include "I2cManager.hpp"
 #include "MouseEventDetector.hpp"
 #include "Qmi8658C.hpp"
+#include "TinyUsbHID.hpp"
 #include "driver/i2c.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -62,16 +63,20 @@ extern "C" void app_main(void)
         return;
     }
     Hilton::Finalizer qmi8658c_finalizer{[&qmi8658c]() {
-        qmi8658c->onTerminate();
-        qmi8658c.reset();
-        qmi8658c = nullptr;
+        if (qmi8658c) {
+            qmi8658c->onTerminate();
+            qmi8658c.reset();
+            qmi8658c = nullptr;
+        }
     }};
     ESP_LOGI(TAG, "QMI8658C initialized");
 
     ESP_LOGI(TAG, "Initializing Balance Board analytics");
-    std::shared_ptr<Hilton::MouseEventDetector> mouseEventDetector
+    auto mouseEventDetector
         = std::make_shared<Hilton::MouseEventDetector>(qmi8658c, config.int1_pin, config.int2_pin);
 
+    auto hid = std::make_shared<Hilton::TinyUsbHID>();
+    mouseEventDetector->eventCallbackService.addCallback(hid->onData);
     mouseEventDetector->run();
 
     // Main task can do other things or just wait

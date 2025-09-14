@@ -9,41 +9,46 @@
 #include <Qmi8658C.hpp>
 #include <QueuedNotificationService.hpp>
 namespace Hilton {
+enum MouseButtonMask {
+    LeftButton = 0x01,
+    RightButton = 0x02,
+    MiddleButton = 0x04,
+    WheelButton = 0x08
+};
+
+/** Mouse events: The series of detected mouse events.
+ * Each event is a combination of the following:
+ * - Mouse button(s) pressed/released
+ * - Mouse button(s) clicked/double-clicked/triple-clicked
+ * - Mouse movement
+ * - Mouse wheel movement
+ *
+ * EXAMPLE:
+ * buttons = LeftButton | MiddleButton
+ * event = ButtonDown | ButtonDrag
+ * deltaX = 10
+ * deltaY = -20
+ * wheelX = 0
+ * wheelY = 0
+ *
+ * EXAMPLE:
+ * buttons = LeftButton | MiddleButton
+ * event = ButtonUp | ButtonDrag
+ * deltaX = 0
+ * deltaY = 0
+ * wheelX = 0
+ */
+struct MouseEvent
+{
+    uint8_t buttons;
+    int8_t deltaX; // -128 to 127
+    int8_t deltaY; // -128 to 127
+    int8_t wheel;  // -128 to 127
+};
+
 class MouseEventDetector
 {
 public:
-    enum MouseButtonMask { LeftButton = 0x01, RightButton = 0x02, MiddleButton = 0x04 , WheelButton = 0x08 };
-
-    /** Mouse events: The series of detected mouse events.
-     * Each event is a combination of the following:
-     * - Mouse button(s) pressed/released
-     * - Mouse button(s) clicked/double-clicked/triple-clicked
-     * - Mouse movement
-     * - Mouse wheel movement
-     *
-     * EXAMPLE:
-     * buttons = LeftButton | MiddleButton
-     * event = ButtonDown | ButtonDrag
-     * deltaX = 10
-     * deltaY = -20
-     * wheelX = 0
-     * wheelY = 0
-     *
-     * EXAMPLE:
-     * buttons = LeftButton | MiddleButton
-     * event = ButtonUp | ButtonDrag
-     * deltaX = 0
-     * deltaY = 0
-     * wheelX = 0
-     */
-    struct MouseEvent
-    {
-        uint8_t buttons;
-        int8_t deltaX; // -128 to 127
-        int8_t deltaY; // -128 to 127
-        int8_t wheel; // -128 to 127
-    };
-
     using TrackingContext = struct
     {
         MouseButtonStateMachine leftButton{"L"};
@@ -69,6 +74,8 @@ public:
         return chainOfResponsibility;
     }
 
+    QueuedNotificationService<MouseEvent> eventCallbackService;
+
 private:
     static constexpr auto TAG{"MOUSE_EVENT_DETECTOR"};
 
@@ -80,7 +87,5 @@ private:
 
     ChainOfResponsibility<Qmi8658C::DataPoint, TrackingContext> chainOfResponsibility;
     TrackingContext trackingContext;
-
-    QueuedNotificationService<MouseEvent> eventCallbackService;
 };
 } // namespace Hilton

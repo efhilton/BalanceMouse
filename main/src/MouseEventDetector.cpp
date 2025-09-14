@@ -120,9 +120,9 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
             bool isMiddlePressed = isButtonPressed(context.middleButton);
             bool isRightPressed = isButtonPressed(context.rightButton);
             context.event.buttons
-                = (isLeftPressed ? MouseEventDetector::MouseButtonMask::LeftButton : 0)
-                  | (isMiddlePressed ? MouseEventDetector::MouseButtonMask::MiddleButton : 0)
-                  | (isRightPressed ? MouseEventDetector::MouseButtonMask::RightButton : 0);
+                = (isLeftPressed ? MouseButtonMask::LeftButton : 0)
+                  | (isMiddlePressed ? MouseButtonMask::MiddleButton : 0)
+                  | (isRightPressed ? MouseButtonMask::RightButton : 0);
 
             return false;
         }};
@@ -142,20 +142,20 @@ ChainOfResponsibility<Qmi8658C::DataPoint, MouseEventDetector::TrackingContext>:
 
 MouseEventDetector::MouseEventDetector(
     const std::shared_ptr<Qmi8658C> &qmi8658C, const gpio_num_t int1Pin, const gpio_num_t int2Pin)
-    : qmi8658c(qmi8658C)
+    : eventCallbackService(10, "EventsCallbackTask")
+    , qmi8658c(qmi8658C)
     , int1Pin(int1Pin)
     , int2Pin(int2Pin)
-    , eventCallbackService(10, "EventsCallbackTask")
 {
     gpio_reset_pin(int1Pin);
     gpio_reset_pin(int2Pin);
 
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_ANYEDGE;
-    io_conf.pin_bit_mask = (1ULL << int1Pin) | (1ULL << int2Pin);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    gpio_config(&io_conf);
+    gpio_config_t ioConf = {};
+    ioConf.intr_type = GPIO_INTR_ANYEDGE;
+    ioConf.pin_bit_mask = (1ULL << int1Pin) | (1ULL << int2Pin);
+    ioConf.mode = GPIO_MODE_INPUT;
+    ioConf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&ioConf);
 
     gpio_install_isr_service(0);
     gpio_isr_handler_add(int1Pin, gpioIsrHandler, this);

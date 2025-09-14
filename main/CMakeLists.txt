@@ -6,6 +6,7 @@ idf_component_register(
         "src/Main.cpp"
         "src/MouseEventDetector.cpp"
         "src/Qmi8658C.cpp"
+        "src/SystemPrinters.cpp"
 
         INCLUDE_DIRS
         "."
