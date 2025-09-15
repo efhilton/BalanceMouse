@@ -235,7 +235,7 @@ void MouseEventDetector::run() {
         while (true) {
           auto bits = xEventGroupWaitBits(self->dataEventGroup,
                                           DATA_AVAILABLE | DO_SHUTDOWN, pdTRUE,
-                                          false, pdMS_TO_TICKS(4000));
+                                          false, pdMS_TO_TICKS(10));
           if ((bits & DO_SHUTDOWN) == DO_SHUTDOWN) {
             break;
           }
@@ -244,7 +244,8 @@ void MouseEventDetector::run() {
             self->qmi8658c->onSample(point);
             self->chainOfResponsibility.handle(point, self->trackingContext);
           } else {
-            ESP_LOGE(TAG, "Timed out with %lu", eventCounter.load());
+            self->qmi8658c->onSample(point);
+            self->chainOfResponsibility.handle(point, self->trackingContext);
           }
         }
       },

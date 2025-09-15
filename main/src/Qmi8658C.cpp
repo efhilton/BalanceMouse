@@ -52,14 +52,7 @@ esp_err_t Qmi8658C::readMultipleRegs(uint8_t startReg, uint8_t *buffer,
 
 // Enable data-ready interrupt and map it to INT1
 esp_err_t Qmi8658C::enable_interrupt() const {
-  esp_err_t err =
-      writeReg(QMI8658_REG_CTRL7, 0x01); // Enable data-ready interrupt
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to enable CTRL7 interrupt: %s", esp_err_to_name(err));
-    return err;
-  }
-
-  err = writeReg(QMI8658_REG_CTRL8, 0x01); // Map interrupt to INT1
+  esp_err_t err = writeReg(QMI8658_REG_CTRL8, 0x42); // Map interrupt to INT1
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to configure CTRL8 (interrupt routing): %s",
              esp_err_to_name(err));
@@ -69,6 +62,18 @@ esp_err_t Qmi8658C::enable_interrupt() const {
 
 // Initialize the sensor
 esp_err_t Qmi8658C::initialize() const {
+  uint8_t ctrl1, ctrl2, ctrl3, ctrl7, ctrl8;
+  readReg(QMI8658_REG_CTRL1, &ctrl1);
+  readReg(QMI8658_REG_CTRL2, &ctrl2);
+  readReg(QMI8658_REG_CTRL3, &ctrl3);
+  readReg(QMI8658_REG_CTRL7, &ctrl7);
+  readReg(QMI8658_REG_CTRL8, &ctrl8);
+
+  ESP_LOGI(TAG,
+           "BEFORE Configured Sensor:\nCTRL1: 0x%02X\nCTRL2: 0x%02X\nCTRL3: "
+           "0x%02X\nCTRL7: 0x%02X\nCTRL8: 0x%02X",
+           ctrl1, ctrl2, ctrl3, ctrl7, ctrl8);
+
   uint8_t whoami;
   if (readReg(QMI8658_REG_WHOAMI, &whoami) != ESP_OK ||
       whoami != QMI8658_REG_WHOAMI_DEFAULT) {
@@ -85,7 +90,7 @@ esp_err_t Qmi8658C::initialize() const {
     return err;
   }
 
-  vTaskDelay(pdMS_TO_TICKS(10)); // Allow reset to complete
+  vTaskDelay(pdMS_TO_TICKS(100)); // Allow reset to complete
 
   // Perform initial configuration
   err = configure();
@@ -100,10 +105,16 @@ esp_err_t Qmi8658C::initialize() const {
     ESP_LOGE(TAG, "Interrupt configuration failed: %s", esp_err_to_name(err));
   }
 
-  uint8_t ctrl7 = 0, ctrl8 = 0;
+  readReg(QMI8658_REG_CTRL1, &ctrl1);
+  readReg(QMI8658_REG_CTRL2, &ctrl2);
+  readReg(QMI8658_REG_CTRL3, &ctrl3);
   readReg(QMI8658_REG_CTRL7, &ctrl7);
   readReg(QMI8658_REG_CTRL8, &ctrl8);
-  ESP_LOGI(TAG, "CTRL7: 0x%02X, CTRL8: 0x%02X", ctrl7, ctrl8);
+
+  ESP_LOGI(TAG,
+           "AFTER Configured Sensor:\nCTRL1: 0x%02X\nCTRL2: 0x%02X\nCTRL3: "
+           "0x%02X\nCTRL7: 0x%02X\nCTRL8: 0x%02X",
+           ctrl1, ctrl2, ctrl3, ctrl7, ctrl8);
 
   return err;
 }
@@ -121,7 +132,7 @@ esp_err_t Qmi8658C::configure() const {
     return err;
 
   // Configure accelerometer
-  constexpr uint8_t accelConfig = 0b00001000; // ±2g, 31.25Hz
+  constexpr uint8_t accelConfig = 0b00000111; // ±2g, 58.75kHz
   err = writeReg(QMI8658_REG_CTRL2, accelConfig);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to configure accelerometer: %s",
@@ -130,7 +141,7 @@ esp_err_t Qmi8658C::configure() const {
   }
 
   // Configure gyroscope
-  constexpr uint8_t gyroConfig = 0b00111000; // ±128dps, 29.375Hz
+  constexpr uint8_t gyroConfig = 0b00110111; // ±128dps, 29.375Hz
   err = writeReg(QMI8658_REG_CTRL3, gyroConfig);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to configure gyroscope: %s", esp_err_to_name(err));
@@ -138,23 +149,11 @@ esp_err_t Qmi8658C::configure() const {
   }
 
   // Enable both accelerometer and gyroscope
-  err =
-      writeReg(QMI8658_REG_CTRL7, QMI8658_ACCEL_EN_MASK | QMI8658_GYRO_EN_MASK);
+  constexpr uint8_t ctrl7 = QMI8658_ACCEL_EN_MASK | QMI8658_GYRO_EN_MASK;
+  err = writeReg(QMI8658_REG_CTRL7, ctrl7);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to enable sensors: %s", esp_err_to_name(err));
   }
-
-  uint8_t ctrl1, ctrl2, ctrl3, ctrl7, ctrl8;
-  readReg(QMI8658_REG_CTRL1, &ctrl1);
-  readReg(QMI8658_REG_CTRL2, &ctrl2);
-  readReg(QMI8658_REG_CTRL3, &ctrl3);
-  readReg(QMI8658_REG_CTRL7, &ctrl7);
-  readReg(QMI8658_REG_CTRL8, &ctrl8);
-
-  ESP_LOGI(TAG,
-           "Configured Sensor:\nCTRL1: 0x%02X\nCTRL2: 0x%02X\nCTRL3: "
-           "0x%02X\nCTRL7: 0x%02X\nCTRL8: 0x%02X",
-           ctrl1, ctrl2, ctrl3, ctrl7, ctrl8);
 
   return err;
 }
@@ -171,13 +170,27 @@ void Qmi8658C::onTerminate() const {
 
 void Qmi8658C::onSample(DataPoint &point) {
   uint8_t status;
-  if (readReg(QMI8658_REG_STATUS0, &status) != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to read status register");
-    return;
+  int64_t startTime = esp_timer_get_time();
+  bool dataAvailable = false;
+
+  while ((esp_timer_get_time() - startTime) <
+         5000000) { // 5 seconds in microseconds
+    if (readReg(QMI8658_REG_STATUS0, &status) != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to read status register");
+      return;
+    }
+
+    if ((status & STATUS0_ACCEL_AVAIL) == STATUS0_ACCEL_AVAIL ||
+        (status & STATUS0_GYRO_AVAIL) == STATUS0_GYRO_AVAIL) {
+      dataAvailable = true;
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10)); // Small delay to prevent busy waiting
   }
 
-  if (!(status & (STATUS0_ACCEL_AVAIL | STATUS0_GYRO_AVAIL))) {
-    return; // No new data available
+  if (!dataAvailable) {
+    return; // No new data available within timeout
   }
 
   uint8_t data[12]; // 6 bytes for accel, 6 bytes for gyro
