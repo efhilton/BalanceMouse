@@ -2,17 +2,17 @@
 #include "esp_log.h"
 #include <functional>
 #include <map>
+#include <NotificationCallback.hpp>
 
 namespace Hilton {
 template<typename T>
 class SimpleNotificationService
 {
 public:
-    using OnDataCallback = std::function<void(const T &data)>;
 
     SimpleNotificationService() = default;
 
-    int addCallback(OnDataCallback &callback)
+    int addCallback(OnDataCallback<T> &callback)
     {
         static int nextId{0};
         const int id = nextId;
@@ -41,7 +41,7 @@ public:
 
 private:
     static constexpr auto TAG{"SIMPLE_NOTIFICATION_SERVICE"};
-    std::map<size_t, OnDataCallback> callbacks_{};
+    std::map<size_t, OnDataCallback<T>> callbacks_{};
     size_t next_id_{0};
 };
 } // namespace Hilton

@@ -1,18 +1,18 @@
 #include <cstdio>
 
 #include "FreeRTOSConfig.h"
-#include "I2cManager.hpp"
-#include "MouseEventDetector.hpp"
-#include "Qmi8658C.hpp"
-#include "TinyUsbHID.hpp"
 #include "driver/i2c.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
-#include "hal/gpio_types.h"
 #include <Finalizer.hpp>
+#include <I2cManager.hpp>
+#include <MouseEventDetector.hpp>
+#include <Qmi8658C.hpp>
+#include <TinyUsbHID.hpp>
+#include <memory>
 
 static constexpr auto TAG{"BALANCE_BOARD"};
 
@@ -25,62 +25,97 @@ static constexpr auto INT1_PIN{GPIO_NUM_10};
 static constexpr auto INT2_PIN{GPIO_NUM_13};
 } // namespace Constants
 
-using BalanceBoardConfig = struct
-{
-    i2c_port_t i2cNum;
-    gpio_num_t sda_pin;
-    gpio_num_t scl_pin;
-    gpio_num_t int1_pin;
-    gpio_num_t int2_pin;
-    gpio_num_t rgb_control_pin;
+using BalanceBoardConfig = struct {
+  i2c_port_t i2cNum;
+  gpio_num_t sda_pin;
+  gpio_num_t scl_pin;
+  gpio_num_t int1_pin;
+  gpio_num_t int2_pin;
+  gpio_num_t rgb_control_pin;
 };
 
-extern "C" void app_main(void)
-{
-    constexpr BalanceBoardConfig config{
-        .i2cNum = Constants::I2C_NUM,
-        .sda_pin = Constants::SDA_PIN,
-        .scl_pin = Constants::SCL_PIN,
-        .int1_pin = Constants::INT1_PIN,
-        .int2_pin = Constants::INT2_PIN,
-        .rgb_control_pin = Constants::RGB_CONTROL_PIN,
-    };
+inline void onMouseData(const Hilton::MouseEvent event, const std::any &userdata) {
+  auto hid = std::any_cast<std::shared_ptr<Hilton::TinyUsbHID>>(userdata);
+  hid->sendHidReport(event.buttons, event.deltaX, event.deltaY, event.wheel);
+}
 
-    Hilton::I2cManager i2CManager(config.i2cNum, config.sda_pin, config.scl_pin);
-    const esp_err_t err = i2CManager.initialize();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(err));
-        return;
+extern "C" void app_main(void) {
+  constexpr BalanceBoardConfig config{
+      .i2cNum = Constants::I2C_NUM,
+      .sda_pin = Constants::SDA_PIN,
+      .scl_pin = Constants::SCL_PIN,
+      .int1_pin = Constants::INT1_PIN,
+      .int2_pin = Constants::INT2_PIN,
+      .rgb_control_pin = Constants::RGB_CONTROL_PIN,
+  };
+
+  std::shared_ptr<Hilton::Qmi8658C> qmi8658c;
+  std::unique_ptr<Hilton::I2cManager> i2cManager;
+  Hilton::Finalizer f{[&qmi8658c, &i2cManager]() {
+    if (i2cManager) {
+      i2cManager->terminate();
+      i2cManager = nullptr;
     }
-    Hilton::Finalizer i2cManager_finalizer{[&i2CManager]() { i2CManager.terminate(); }};
-    ESP_LOGI(TAG, "I2C initialized in %d", config.i2cNum);
-
-    ESP_LOGI(TAG, "Initializing QMI8658C");
-    std::shared_ptr<Hilton::Qmi8658C> qmi8658c = std::make_shared<Hilton::Qmi8658C>(config.i2cNum);
-    esp_err_t init_result = qmi8658c->initialize();
-    if (init_result != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize QMI8658C: %s", esp_err_to_name(init_result));
-        return;
+    if (qmi8658c) {
+      qmi8658c->onTerminate();
+      qmi8658c.reset();
+      qmi8658c = nullptr;
     }
-    Hilton::Finalizer qmi8658c_finalizer{[&qmi8658c]() {
-        if (qmi8658c) {
-            qmi8658c->onTerminate();
-            qmi8658c.reset();
-            qmi8658c = nullptr;
-        }
-    }};
-    ESP_LOGI(TAG, "QMI8658C initialized");
+  }};
 
-    ESP_LOGI(TAG, "Initializing Balance Board analytics");
-    auto mouseEventDetector
-        = std::make_shared<Hilton::MouseEventDetector>(qmi8658c, config.int1_pin, config.int2_pin);
+  i2cManager = std::make_unique<Hilton::I2cManager>(
+      config.i2cNum, config.sda_pin, config.scl_pin);
+  const esp_err_t err = i2cManager->initialize();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(err));
+    return;
+  }
+  ESP_LOGI(TAG, "I2C initialized in %d", config.i2cNum);
 
-    auto hid = std::make_shared<Hilton::TinyUsbHID>();
-    mouseEventDetector->eventCallbackService.addCallback(hid->onData);
-    mouseEventDetector->run();
+  ESP_LOGI(TAG, "Initializing QMI8658C");
+  qmi8658c = std::make_shared<Hilton::Qmi8658C>(config.i2cNum);
+  esp_err_t init_result = qmi8658c->initialize();
+  if (init_result != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize QMI8658C: %s",
+             esp_err_to_name(init_result));
+    return;
+  }
+  ESP_LOGI(TAG, "QMI8658C initialized");
 
-    // Main task can do other things or just wait
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Main task heartbeat
-    }
+  ESP_LOGI(TAG, "Initializing Balance Board analytics");
+  auto mouseEventDetector = std::make_shared<Hilton::MouseEventDetector>(
+      qmi8658c, config.int1_pin, config.int2_pin);
+
+  auto hid = std::make_shared<Hilton::TinyUsbHID>();
+  hid->begin();
+
+  mouseEventDetector->eventCallbackService.addCallback(onMouseData, hid);
+  mouseEventDetector->run();
+
+  // Main task can do other things or just wait
+  while (true) {
+    vTaskDelay(pdMS_TO_TICKS(1000)); // Main task heartbeat
+  }
+
+  if (hid) {
+    hid->end();
+    hid.reset();
+    hid = nullptr;
+  }
+  if (mouseEventDetector) {
+    mouseEventDetector.reset();
+    mouseEventDetector = nullptr;
+  }
+  if (qmi8658c) {
+    qmi8658c.reset();
+    qmi8658c = nullptr;
+  }
+  if (i2cManager) {
+    i2cManager.reset();
+    i2cManager = nullptr;
+  }
+  if (i2cManager) {
+    i2cManager.reset();
+    i2cManager = nullptr;
+  }
 }

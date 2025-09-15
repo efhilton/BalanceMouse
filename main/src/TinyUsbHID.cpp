@@ -5,10 +5,6 @@ namespace Hilton {
 
 TinyUsbHID::TinyUsbHID()
 {
-    // Initialize member variables, BT stack, etc.
-    onData = [this](const MouseEvent &event){
-        sendHidReport(event.buttons, event.deltaX, event.deltaY, event.wheel);
-    };
 }
 
 TinyUsbHID::~TinyUsbHID()

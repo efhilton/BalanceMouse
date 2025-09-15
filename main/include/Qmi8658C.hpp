@@ -1,7 +1,7 @@
 #pragma once
 #include "esp_err.h"
-#include "hal/i2c_types.h"
-#include <SimpleNotificationService.hpp>
+#include "esp_log.h"
+#include <driver/i2c.h>
 
 namespace Hilton {
 class Qmi8658C
@@ -145,16 +145,16 @@ private:
 
 public:
     explicit Qmi8658C(i2c_port_t i2CPort);
-    esp_err_t initialize() const;
-    esp_err_t disableAllSensors() const;
+  [[nodiscard]] esp_err_t enable_interrupt() const;
+  [[nodiscard]] esp_err_t initialize() const;
+    [[nodiscard]] esp_err_t disableAllSensors() const;
     void onTerminate() const;
     void populateAcceleration(DataPoint &point);
     static void populateTilt(DataPoint &point);
     void populateOrientation(DataPoint &point);
-    void onSample();
-    esp_err_t configure() const;
-    SimpleNotificationService<DataPoint> dataCallbackService{};
+    void onSample(DataPoint &point);
+    [[nodiscard]] esp_err_t configure() const;
     Point orientation{};
     Point lastGyro{};
 };
-} // namespace Hilton
+}

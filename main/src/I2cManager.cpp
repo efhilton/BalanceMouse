@@ -1,8 +1,10 @@
 
 #include "I2cManager.hpp"
 
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
+
+#include <driver/i2c.h>
 
 namespace Hilton {
 
@@ -25,7 +27,7 @@ esp_err_t I2cManager::initialize()
     conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
     conf.scl_io_num = sclPin;
     conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = 100000;
+    conf.master.clk_speed = 100'000;
 
     esp_err_t err = i2c_param_config(i2cPort, &conf);
     if (err != ESP_OK) {

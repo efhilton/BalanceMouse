@@ -5,18 +5,15 @@
 
 namespace Hilton {
 
-class TinyUsbHID
-{
+class TinyUsbHID {
 public:
-    TinyUsbHID();
-    ~TinyUsbHID();
+  TinyUsbHID();
+  ~TinyUsbHID();
 
-    bool begin();
-    void end();
-    std::function<void(const MouseEvent &data)> onData;
+  bool begin();
+  void end();
 
-private:
-     void sendHidReport(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheelX);
+  void sendHidReport(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheelX);
 };
 
 } // namespace Hilton

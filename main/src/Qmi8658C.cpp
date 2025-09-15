@@ -1,130 +1,147 @@
-#include <Qmi8658C.hpp>
+#include "Qmi8658C.hpp"
+#include "esp_log.h"
+
+#include <cmath>
 #include <cstring>
-#include <ctgmath>
 #include <driver/i2c.h>
-#include <esp_log.h>
 #include <esp_timer.h>
 
 namespace Hilton {
 
-esp_err_t Qmi8658C::writeReg(const uint8_t reg, const uint8_t data) const {
-  uint8_t write_buf[2] = {reg, data};
-  return i2c_master_write_to_device(i2cPort, QMI8658_L_SLAVE_ADDRESS, write_buf,
-                                    sizeof(write_buf), pdMS_TO_TICKS(100));
-}
+constexpr const char *TAG = "QMI8658C";
 
-esp_err_t Qmi8658C::readReg(const uint8_t reg, uint8_t *data) const {
-  return i2c_master_write_read_device(i2cPort, QMI8658_L_SLAVE_ADDRESS, &reg, 1,
-                                      data, 1, pdMS_TO_TICKS(100));
-}
-
-esp_err_t Qmi8658C::readMultipleRegs(const uint8_t startReg, uint8_t *data,
-                                     const size_t len) const {
-  return i2c_master_write_read_device(i2cPort, QMI8658_L_SLAVE_ADDRESS,
-                                      &startReg, 1, data, len,
-                                      pdMS_TO_TICKS(100));
-}
-
+// Constructor
 Qmi8658C::Qmi8658C(const i2c_port_t i2CPort) : i2cPort(i2CPort) {}
 
+// Simplified helper to write a single register
+esp_err_t Qmi8658C::writeReg(uint8_t reg, uint8_t data) const {
+  uint8_t buffer[2] = {reg, data};
+  esp_err_t err =
+      i2c_master_write_to_device(i2cPort, QMI8658_L_SLAVE_ADDRESS, buffer,
+                                 sizeof(buffer), pdMS_TO_TICKS(1000));
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to write register 0x%02X: %s", reg,
+             esp_err_to_name(err));
+  }
+  return err;
+}
+
+// Simplified helper to read a single register
+esp_err_t Qmi8658C::readReg(uint8_t reg, uint8_t *data) const {
+  esp_err_t err = i2c_master_write_read_device(
+      i2cPort, QMI8658_L_SLAVE_ADDRESS, &reg, 1, data, 1, pdMS_TO_TICKS(1000));
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to read register 0x%02X: %s", reg,
+             esp_err_to_name(err));
+  }
+  return err;
+}
+
+// Simplified helper to read multiple registers starting at a given address
+esp_err_t Qmi8658C::readMultipleRegs(uint8_t startReg, uint8_t *buffer,
+                                     size_t len) const {
+  esp_err_t err =
+      i2c_master_write_read_device(i2cPort, QMI8658_L_SLAVE_ADDRESS, &startReg,
+                                   1, buffer, len, pdMS_TO_TICKS(1000));
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to read multiple registers starting at 0x%02X: %s",
+             startReg, esp_err_to_name(err));
+  }
+  return err;
+}
+
+// Enable data-ready interrupt and map it to INT1
+esp_err_t Qmi8658C::enable_interrupt() const {
+  esp_err_t err =
+      writeReg(QMI8658_REG_CTRL7, 0x01); // Enable data-ready interrupt
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to enable CTRL7 interrupt: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = writeReg(QMI8658_REG_CTRL8, 0x01); // Map interrupt to INT1
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure CTRL8 (interrupt routing): %s",
+             esp_err_to_name(err));
+  }
+  return err;
+}
+
+// Initialize the sensor
 esp_err_t Qmi8658C::initialize() const {
   uint8_t whoami;
   if (readReg(QMI8658_REG_WHOAMI, &whoami) != ESP_OK ||
       whoami != QMI8658_REG_WHOAMI_DEFAULT) {
-    ESP_LOGI(TAG, "Failed to identify QMI8658C sensor");
+    ESP_LOGE(TAG,
+             "Device not found or incorrect WHOAMI register value (0x%02X)",
+             whoami);
     return ESP_ERR_INVALID_STATE;
   }
 
-  // Add soft reset
+  // Reset sensor
   esp_err_t err = writeReg(QMI8658_REG_RESET, QMI8658_REG_RESET_DEFAULT);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to reset sensor");
+    ESP_LOGE(TAG, "Sensor reset failed: %s", esp_err_to_name(err));
     return err;
   }
 
-  // Wait for reset to complete
-  vTaskDelay(pdMS_TO_TICKS(10));
+  vTaskDelay(pdMS_TO_TICKS(10)); // Allow reset to complete
 
+  // Perform initial configuration
   err = configure();
   if (err != ESP_OK) {
-    ESP_LOGI(TAG, "Failed to configure QMI8658C sensor: %s",
-             esp_err_to_name(err));
+    ESP_LOGE(TAG, "Sensor configuration failed: %s", esp_err_to_name(err));
     return err;
   }
-  ESP_LOGI(TAG, "Initialized QMI8658C sensor");
-  return err;
-}
 
-esp_err_t Qmi8658C::disableAllSensors() const {
-  // Reset and initialize the sensor
-  const esp_err_t err =
-      writeReg(QMI8658_REG_CTRL7, 0x00); // Disable all sensors first
+  // Enable interrupts
+  err = enable_interrupt();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to reset sensor: %s", esp_err_to_name(err));
-    return err;
+    ESP_LOGE(TAG, "Interrupt configuration failed: %s", esp_err_to_name(err));
   }
+
+  uint8_t ctrl7 = 0, ctrl8 = 0;
+  readReg(QMI8658_REG_CTRL7, &ctrl7);
+  readReg(QMI8658_REG_CTRL8, &ctrl8);
+  ESP_LOGI(TAG, "CTRL7: 0x%02X, CTRL8: 0x%02X", ctrl7, ctrl8);
+
   return err;
 }
 
+// Disable all sensors
+esp_err_t Qmi8658C::disableAllSensors() const {
+  return writeReg(QMI8658_REG_CTRL7,
+                  0x00); // Disable both accelerometer and gyroscope
+}
+
+// Configure the sensor settings
 esp_err_t Qmi8658C::configure() const {
   esp_err_t err = disableAllSensors();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to disable accelerometer: %s", esp_err_to_name(err));
+  if (err != ESP_OK)
     return err;
-  }
 
-  // First configure CTRL1 - Enable timestamp (bit 6) and enable motion (bit 5)
-  constexpr uint8_t ctrl1Value{BIT5 | BIT6};
-  err = writeReg(QMI8658_REG_CTRL1, ctrl1Value);
-  if (err != ESP_OK) {
-    return err;
-  }
-
-  // Configure accelerometer (31.25Hz ODR, +/- 2g full scale, no self test)
-  // Bits[7:5]: Full Scale Range (FSR)
-  // Bits[4:2]: Output Data Rate (ODR)
-  // Bits[1:0]: Low-pass filter bandwidth
-  constexpr uint8_t accelConfigValue{0b00001000};
-  // 000 -> ±2g range (correct)
-  // 001 -> 31.25Hz ODR (correct)
-  // 00  -> Narrowest bandwidth (fine)
-
-  err = writeReg(QMI8658_REG_CTRL2, accelConfigValue); // 0b0 000 1000
+  // Configure accelerometer
+  constexpr uint8_t accelConfig = 0b00001000; // ±2g, 31.25Hz
+  err = writeReg(QMI8658_REG_CTRL2, accelConfig);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to configure accelerometer: %s",
              esp_err_to_name(err));
     return err;
   }
 
-  // Configure gyroscope (±128°/s range, 29.375 Hz ODR)
-  // Bits[7:5]: Full Scale Range (FSR)
-  // Bits[4:2]: Output Data Rate (ODR)
-  // Bits[1:0]: Low-pass filter bandwidth
-  constexpr uint8_t gyroConfigValue{0b00111000};
-  // 001 -> ±128 dps range (correct)
-  // 110 -> Higher ODR than accelerometer (should match accel)
-  // 00  -> Narrowest bandwidth (fine)
-
-  err = writeReg(QMI8658_REG_CTRL3, gyroConfigValue); // 0b01100011
+  // Configure gyroscope
+  constexpr uint8_t gyroConfig = 0b00111000; // ±128dps, 29.375Hz
+  err = writeReg(QMI8658_REG_CTRL3, gyroConfig);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to configure gyroscope: %s", esp_err_to_name(err));
     return err;
   }
-
-  // // Enable data ready interrupt
-  // constexpr uint8_t motionDetectionValue{0x00};
-  // err = writeReg(QMI8658_REG_CTRL8, motionDetectionValue);
-  // if (err != ESP_OK) {
-  //     ESP_LOGE(TAG, "Failed to enable data ready interrupt: %s",
-  //     esp_err_to_name(err)); return err;
-  // }
 
   // Enable both accelerometer and gyroscope
   err =
       writeReg(QMI8658_REG_CTRL7, QMI8658_ACCEL_EN_MASK | QMI8658_GYRO_EN_MASK);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to enable sensors: %s", esp_err_to_name(err));
-    return err;
   }
 
   uint8_t ctrl1, ctrl2, ctrl3, ctrl7, ctrl8;
@@ -135,17 +152,24 @@ esp_err_t Qmi8658C::configure() const {
   readReg(QMI8658_REG_CTRL8, &ctrl8);
 
   ESP_LOGI(TAG,
-           "After config\n\tCTRL1: 0x%02X\n\tCTRL2: 0x%02X\n\tCTRL3: "
-           "0x%02X\n\tCTRL7: "
-           "0x%02X\n\tCTRL8: 0x%02X",
+           "Configured Sensor:\nCTRL1: 0x%02X\nCTRL2: 0x%02X\nCTRL3: "
+           "0x%02X\nCTRL7: 0x%02X\nCTRL8: 0x%02X",
            ctrl1, ctrl2, ctrl3, ctrl7, ctrl8);
 
-  vTaskDelay(pdMS_TO_TICKS(10));
-
-  return ESP_OK;
+  return err;
 }
 
-void Qmi8658C::onSample() {
+// Cleanup sensor on termination
+void Qmi8658C::onTerminate() const {
+  esp_err_t err = writeReg(QMI8658_REG_CTRL7, 0x00); // Disable all sensors
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to shut down sensor: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "Sensor shut down successfully");
+  }
+}
+
+void Qmi8658C::onSample(DataPoint &point) {
   uint8_t status;
   if (readReg(QMI8658_REG_STATUS0, &status) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to read status register");
@@ -166,50 +190,33 @@ void Qmi8658C::onSample() {
   constexpr float ACCEL_SCALE{-2.0f * 9.81 /
                               32768.0f};         // For ±2G range, in m/s^2
   constexpr float GYRO_SCALE{128.0f / 32768.0f}; // For ±128DPS range
-  DataPoint point{.accelerometer =
-                      {
-                          static_cast<float>(
-                              static_cast<int16_t>((data[1] << 8) | data[0])) *
-                              ACCEL_SCALE, // X
-                          static_cast<float>(
-                              static_cast<int16_t>((data[3] << 8) | data[2])) *
-                              ACCEL_SCALE, // Y
-                          static_cast<float>(
-                              static_cast<int16_t>((data[5] << 8) | data[4])) *
-                              ACCEL_SCALE // Z
-                      },
-                  .gyroscope =
-                      {
-                          static_cast<float>(
-                              static_cast<int16_t>((data[7] << 8) | data[6])) *
-                              GYRO_SCALE, // X
-                          static_cast<float>(
-                              static_cast<int16_t>((data[9] << 8) | data[8])) *
-                              GYRO_SCALE, // Y
-                          static_cast<float>(static_cast<int16_t>(
-                              (data[11] << 8) | data[10])) *
-                              GYRO_SCALE // Z
-                      },
-                  .acceleration{0, 0, 0},
-                  .orientation{0, 0, 0},
-                  .tilt{0, 0, 0}};
+  point.accelerometer.x =
+      static_cast<float>(static_cast<int16_t>((data[1] << 8) | data[0])) *
+      ACCEL_SCALE; // X
+  point.accelerometer.y =
+      static_cast<float>(static_cast<int16_t>((data[3] << 8) | data[2])) *
+      ACCEL_SCALE; // Y
+  point.accelerometer.z =
+      static_cast<float>(static_cast<int16_t>((data[5] << 8) | data[4])) *
+      ACCEL_SCALE; // Z
+
+  point.gyroscope.x =
+      static_cast<float>(static_cast<int16_t>((data[7] << 8) | data[6])) *
+      GYRO_SCALE; // X
+  point.gyroscope.y =
+      static_cast<float>(static_cast<int16_t>((data[9] << 8) | data[8])) *
+      GYRO_SCALE; // Y
+  point.gyroscope.z =
+      static_cast<float>(static_cast<int16_t>((data[11] << 8) | data[10])) *
+      GYRO_SCALE; // Z
+
+  point.acceleration = {0, 0, 0};
+  point.orientation = {0, 0, 0};
+  point.tilt = {0, 0, 0};
 
   populateAcceleration(point);
   populateOrientation(point);
   populateTilt(point);
-
-  dataCallbackService.notify(point);
-}
-
-void Qmi8658C::onTerminate() const {
-  // Put the sensor in sleep mode
-  esp_err_t err = writeReg(QMI8658_REG_CTRL7, 0x00);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to put sensor in sleep mode: %s. Ignored.",
-             esp_err_to_name(err));
-    return;
-  }
-  ESP_LOGI(TAG, "Terminated QMI8658C sensor");
 }
 
 void Qmi8658C::populateAcceleration(DataPoint &point) {
@@ -260,14 +267,16 @@ void Qmi8658C::populateOrientation(DataPoint &point) {
   orientation.z += point.gyroscope.z * deltaTime;
 
   // Use accelerometer to estimate tilt (roll and pitch)
-  const float accelPitch = atan2(
-      point.accelerometer.x,
-      static_cast<float>(sqrt(point.accelerometer.y * point.accelerometer.y +
-                              point.accelerometer.z * point.accelerometer.z)));
-  const float accelRoll = atan2(
-      point.accelerometer.y,
-      static_cast<float>(sqrt(point.accelerometer.x * point.accelerometer.x +
-                              point.accelerometer.z * point.accelerometer.z)));
+  const float accelPitch =
+      std::atan2(point.accelerometer.x,
+                 static_cast<float>(
+                     std::sqrt(point.accelerometer.y * point.accelerometer.y +
+                               point.accelerometer.z * point.accelerometer.z)));
+  const float accelRoll =
+      std::atan2(point.accelerometer.y,
+                 static_cast<float>(
+                     std::sqrt(point.accelerometer.x * point.accelerometer.x +
+                               point.accelerometer.z * point.accelerometer.z)));
 
   // Correct gyroscope orientation using the accelerometer (complementary
   // filter)
@@ -278,5 +287,4 @@ void Qmi8658C::populateOrientation(DataPoint &point) {
   point.orientation.y = orientation.y;
   point.orientation.z = orientation.z;
 }
-
 } // namespace Hilton

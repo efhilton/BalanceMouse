@@ -1,13 +1,13 @@
 #pragma once
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "soc/gpio_num.h"
 #include <ChainOfResponsibility.hpp>
 #include <HighPassFilter.hpp>
 #include <MouseButtonStateMachine.hpp>
-#include <memory>
 #include <Qmi8658C.hpp>
 #include <QueuedNotificationService.hpp>
+#include <memory>
+#include <string>
+
 namespace Hilton {
 enum MouseButtonMask {
     LeftButton = 0x01,
@@ -61,31 +61,22 @@ public:
         MouseEvent event{};
     };
 
-    ~MouseEventDetector() = default;
+    ~MouseEventDetector();
 
-    static void gpioIsrHandler(void *p);
-    SimpleNotificationService<Qmi8658C::DataPoint>::OnDataCallback onDataCallback;
     MouseEventDetector(
         const std::shared_ptr<Qmi8658C> &qmi8658C, gpio_num_t int1Pin, gpio_num_t int2Pin);
     void run();
 
-    ChainOfResponsibility<Qmi8658C::DataPoint, TrackingContext> &getChainOfResponsibility()
-    {
-        return chainOfResponsibility;
-    }
-
     QueuedNotificationService<MouseEvent> eventCallbackService;
 
-private:
     static constexpr auto TAG{"MOUSE_EVENT_DETECTOR"};
 
     std::shared_ptr<Qmi8658C> qmi8658c;
     gpio_num_t int1Pin;
     gpio_num_t int2Pin;
-    EventGroupHandle_t eventGroup;
-    bool isRunning;
 
     ChainOfResponsibility<Qmi8658C::DataPoint, TrackingContext> chainOfResponsibility;
     TrackingContext trackingContext;
+    EventGroupHandle_t dataEventGroup;
 };
 } // namespace Hilton
