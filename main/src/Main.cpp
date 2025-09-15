@@ -34,7 +34,8 @@ using BalanceBoardConfig = struct {
   gpio_num_t rgb_control_pin;
 };
 
-inline void onMouseData(const Hilton::MouseEvent event, const std::any &userdata) {
+inline void onMouseData(const Hilton::MouseEvent event,
+                        const std::any &userdata) {
   auto hid = std::any_cast<std::shared_ptr<Hilton::TinyUsbHID>>(userdata);
   hid->sendHidReport(event.buttons, event.deltaX, event.deltaY, event.wheel);
 }
@@ -51,15 +52,26 @@ extern "C" void app_main(void) {
 
   std::shared_ptr<Hilton::Qmi8658C> qmi8658c;
   std::unique_ptr<Hilton::I2cManager> i2cManager;
-  Hilton::Finalizer f{[&qmi8658c, &i2cManager]() {
-    if (i2cManager) {
-      i2cManager->terminate();
-      i2cManager = nullptr;
+  std::shared_ptr<Hilton::MouseEventDetector> mouseEventDetector;
+  std::shared_ptr<Hilton::TinyUsbHID> hid;
+  Hilton::Finalizer f{[&qmi8658c, &i2cManager, &mouseEventDetector, &hid]() {
+    if (hid) {
+      hid->end();
+      hid.reset();
+      hid = nullptr;
+    }
+    if (mouseEventDetector) {
+      mouseEventDetector.reset();
+      mouseEventDetector = nullptr;
     }
     if (qmi8658c) {
       qmi8658c->onTerminate();
       qmi8658c.reset();
       qmi8658c = nullptr;
+    }
+    if (i2cManager) {
+      i2cManager->terminate();
+      i2cManager = nullptr;
     }
   }};
 
@@ -83,10 +95,10 @@ extern "C" void app_main(void) {
   ESP_LOGI(TAG, "QMI8658C initialized");
 
   ESP_LOGI(TAG, "Initializing Balance Board analytics");
-  auto mouseEventDetector = std::make_shared<Hilton::MouseEventDetector>(
+  mouseEventDetector = std::make_shared<Hilton::MouseEventDetector>(
       qmi8658c, config.int1_pin, config.int2_pin);
 
-  auto hid = std::make_shared<Hilton::TinyUsbHID>();
+  hid = std::make_shared<Hilton::TinyUsbHID>();
   hid->begin();
 
   mouseEventDetector->eventCallbackService.addCallback(onMouseData, hid);
@@ -95,27 +107,5 @@ extern "C" void app_main(void) {
   // Main task can do other things or just wait
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(1000)); // Main task heartbeat
-  }
-
-  if (hid) {
-    hid->end();
-    hid.reset();
-    hid = nullptr;
-  }
-  if (mouseEventDetector) {
-    mouseEventDetector.reset();
-    mouseEventDetector = nullptr;
-  }
-  if (qmi8658c) {
-    qmi8658c.reset();
-    qmi8658c = nullptr;
-  }
-  if (i2cManager) {
-    i2cManager.reset();
-    i2cManager = nullptr;
-  }
-  if (i2cManager) {
-    i2cManager.reset();
-    i2cManager = nullptr;
   }
 }

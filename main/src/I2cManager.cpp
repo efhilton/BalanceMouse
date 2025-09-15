@@ -1,7 +1,6 @@
 
 #include "I2cManager.hpp"
 
-#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 #include <driver/i2c.h>

@@ -198,19 +198,6 @@ MouseEventDetector::MouseEventDetector(
   chainOfResponsibility.addHandler(clickHandler);
   chainOfResponsibility.addHandler(cleanupEventsHandler);
   chainOfResponsibility.addHandler(printStats);
-
-  gpio_install_isr_service(0);
-  ret = gpio_isr_handler_add(int1Pin, gpioIsrHandler, this);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to add ISR handler for INT1: %s",
-             esp_err_to_name(ret));
-  }
-
-  ret = gpio_isr_handler_add(int2Pin, gpioIsrHandler, this);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to add ISR handler for INT2: %s",
-             esp_err_to_name(ret));
-  }
 }
 
 void MouseEventDetector::run() {
@@ -223,6 +210,8 @@ void MouseEventDetector::run() {
 
         Finalizer f{[self] {
           ESP_LOGI(TAG, "Stopping data processing task");
+          gpio_isr_handler_remove(self->int1Pin);
+          gpio_isr_handler_remove(self->int2Pin);
           xEventGroupClearBits(self->dataEventGroup, IS_RUNNING);
           xEventGroupSetBits(self->dataEventGroup, IS_SHUTDOWN);
           vTaskDelete(nullptr);
@@ -231,21 +220,43 @@ void MouseEventDetector::run() {
         xEventGroupClearBits(self->dataEventGroup, IS_SHUTDOWN);
         xEventGroupSetBits(self->dataEventGroup, IS_RUNNING);
         Qmi8658C::DataPoint point{};
+
+        gpio_install_isr_service(0);
+        esp_err_t ret =
+            gpio_isr_handler_add(self->int1Pin, gpioIsrHandler, self);
+        if (ret != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to add ISR handler for INT1: %s",
+                   esp_err_to_name(ret));
+        }
+
+        ret = gpio_isr_handler_add(self->int2Pin, gpioIsrHandler, self);
+        if (ret != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to add ISR handler for INT2: %s",
+                   esp_err_to_name(ret));
+        }
         ESP_LOGI(TAG, "Starting data processing task");
         while (true) {
           auto bits = xEventGroupWaitBits(self->dataEventGroup,
                                           DATA_AVAILABLE | DO_SHUTDOWN, pdTRUE,
-                                          false, pdMS_TO_TICKS(10));
+                                          false, pdMS_TO_TICKS(20));
           if ((bits & DO_SHUTDOWN) == DO_SHUTDOWN) {
             break;
           }
           if ((bits & DATA_AVAILABLE) == DATA_AVAILABLE) {
-            ESP_LOGI(TAG, "New data available");
-            self->qmi8658c->onSample(point);
+            if (eventCounter.load() > 0) {
+              ESP_LOGE(TAG, "New data available with counter = %lu",
+                       eventCounter.load());
+            }
+          } else {
+            if (eventCounter.load() > 0) {
+              ESP_LOGI(TAG, "Timeout with counter = %lu", eventCounter.load());
+            }
+          }
+
+          if (self->qmi8658c->onSample(point) == ESP_OK) {
             self->chainOfResponsibility.handle(point, self->trackingContext);
           } else {
-            self->qmi8658c->onSample(point);
-            self->chainOfResponsibility.handle(point, self->trackingContext);
+            ESP_LOGE(TAG, "Failed to process data (%s)", esp_err_to_name(ret));
           }
         }
       },
@@ -260,8 +271,7 @@ MouseEventDetector::~MouseEventDetector() {
   xEventGroupSetBits(dataEventGroup, DO_SHUTDOWN);
   xEventGroupWaitBits(dataEventGroup, IS_SHUTDOWN, pdTRUE, false,
                       portMAX_DELAY);
-  gpio_isr_handler_remove(int1Pin);
-  gpio_isr_handler_remove(int2Pin);
+
   vEventGroupDelete(dataEventGroup);
   gpio_uninstall_isr_service();
 }

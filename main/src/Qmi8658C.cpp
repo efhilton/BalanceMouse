@@ -50,18 +50,25 @@ esp_err_t Qmi8658C::readMultipleRegs(uint8_t startReg, uint8_t *buffer,
   return err;
 }
 
-// Enable data-ready interrupt and map it to INT1
-esp_err_t Qmi8658C::enable_interrupt() const {
-  esp_err_t err = writeReg(QMI8658_REG_CTRL8, 0x42); // Map interrupt to INT1
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to configure CTRL8 (interrupt routing): %s",
-             esp_err_to_name(err));
-  }
-  return err;
-}
-
 // Initialize the sensor
-esp_err_t Qmi8658C::initialize() const {
+esp_err_t Qmi8658C::initialize() {
+  // Initialize Kalman filters for acceleration
+  kalmanAccelerationX.initialize(1e-3, 1e-2);
+  kalmanAccelerationY.initialize(1e-3, 1e-2);
+  kalmanAccelerationZ.initialize(1e-3, 1e-2);
+
+  // Initialize Kalman filters for tilt
+  kalmanTiltRoll.initialize(1e-3, 1e-2);
+  kalmanTiltPitch.initialize(1e-3, 1e-2);
+
+  // Initialize Kalman filters for lastOrientation
+  kalmanOrientationX.initialize(1e-3, 1e-2);
+  kalmanOrientationY.initialize(1e-3, 1e-2);
+  kalmanOrientationZ.initialize(1e-3, 1e-2);
+
+  // Initialize last gyroscope readings to zero
+  lastGyro = {0, 0, 0};
+
   uint8_t ctrl1, ctrl2, ctrl3, ctrl7, ctrl8;
   readReg(QMI8658_REG_CTRL1, &ctrl1);
   readReg(QMI8658_REG_CTRL2, &ctrl2);
@@ -97,12 +104,6 @@ esp_err_t Qmi8658C::initialize() const {
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Sensor configuration failed: %s", esp_err_to_name(err));
     return err;
-  }
-
-  // Enable interrupts
-  err = enable_interrupt();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Interrupt configuration failed: %s", esp_err_to_name(err));
   }
 
   readReg(QMI8658_REG_CTRL1, &ctrl1);
@@ -155,6 +156,12 @@ esp_err_t Qmi8658C::configure() const {
     ESP_LOGE(TAG, "Failed to enable sensors: %s", esp_err_to_name(err));
   }
 
+  constexpr uint8_t ctrl8 = 0x40 | 0x02;
+  err = writeReg(QMI8658_REG_CTRL8, ctrl8); // Map interrupt to INT1
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure CTRL8 (interrupt routing): %s",
+             esp_err_to_name(err));
+  }
   return err;
 }
 
@@ -168,41 +175,127 @@ void Qmi8658C::onTerminate() const {
   }
 }
 
-void Qmi8658C::onSample(DataPoint &point) {
+esp_err_t Qmi8658C::onSample(DataPoint &point) {
   uint8_t status;
+  uint8_t statusInt;
   int64_t startTime = esp_timer_get_time();
   bool dataAvailable = false;
 
   while ((esp_timer_get_time() - startTime) <
-         5000000) { // 5 seconds in microseconds
+         5'000'000) { // 5 seconds in microseconds
     if (readReg(QMI8658_REG_STATUS0, &status) != ESP_OK) {
       ESP_LOGE(TAG, "Failed to read status register");
-      return;
+      return ESP_FAIL;
+    }
+    if (readReg(QMI8658_REG_STATUS_INT, &statusInt) != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to read status_int register");
+      return ESP_FAIL;
     }
 
-    if ((status & STATUS0_ACCEL_AVAIL) == STATUS0_ACCEL_AVAIL ||
-        (status & STATUS0_GYRO_AVAIL) == STATUS0_GYRO_AVAIL) {
+    if ((status & STATUS0_ACCEL_AVAIL) == STATUS0_ACCEL_AVAIL &&
+        (status & STATUS0_GYRO_AVAIL) == STATUS0_GYRO_AVAIL &&
+        (statusInt & 0x01) == 0x01) {
       dataAvailable = true;
       break;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10)); // Small delay to prevent busy waiting
+    vTaskDelay(pdMS_TO_TICKS(100)); // Small delay to prevent busy waiting
   }
 
   if (!dataAvailable) {
-    return; // No new data available within timeout
+    return ESP_ERR_TIMEOUT; // No new data available within timeout
   }
 
   uint8_t data[12]; // 6 bytes for accel, 6 bytes for gyro
   if (readMultipleRegs(QMI8658_REG_AX_L, data, sizeof(data)) != ESP_OK) {
     ESP_LOGI(TAG, "Failed to read sensor data");
-    return;
+    return ESP_FAIL;
   }
 
   // Convert raw data to sensor values
+  static int64_t lastTime = esp_timer_get_time();
+  const int64_t currentTime = esp_timer_get_time();
+  const float deltaTime =
+      static_cast<float>(currentTime - lastTime) / 1000000.0f;
+  lastTime = currentTime;
+
+  populateRawAccelerometer(point, data);
+  populateRawGyroscope(point, data);
+  populateAcceleration(point, deltaTime);
+  populateOrientation(point, deltaTime);
+  populateTilt(point, deltaTime);
+  return ESP_OK;
+}
+
+void Qmi8658C::populateAcceleration(DataPoint &point, const float &deltaTime) {
+  // Calculate angular acceleration as the rate of change of angular velocity
+  point.acceleration.x = kalmanAccelerationX.estimate(
+      (point.gyroscope.x - lastGyro.x) / deltaTime, 0, deltaTime);
+  point.acceleration.y = kalmanAccelerationY.estimate(
+      (point.gyroscope.y - lastGyro.y) / deltaTime, 0, deltaTime);
+  point.acceleration.z = kalmanAccelerationZ.estimate(
+      (point.gyroscope.z - lastGyro.z) / deltaTime, 0, deltaTime);
+
+  // Store the current gyroscope values as the last values for the next
+  // iteration
+  lastGyro = point.gyroscope;
+}
+
+void Qmi8658C::populateTilt(DataPoint &point, const float &deltaTime) {
+  constexpr float g = 9.81f; // Convert from m/s^2 to g units
+  const float ax = point.accelerometer.x / g;
+  const float ay = point.accelerometer.y / g;
+  const float az = point.accelerometer.z / g;
+
+  // Direct tilt calculation from accelerometer
+  const float roll = std::atan2(ay, az);
+  const float pitch = std::atan2(-ax, std::sqrt(ay * ay + az * az));
+
+  // Use Kalman filters to smooth raw tilt values
+  point.tilt.x =
+      kalmanTiltRoll.estimate(roll * 180.0f / M_PI, 0, 0.0f); // Roll (degrees)
+  point.tilt.y = kalmanTiltPitch.estimate(pitch * 180.0f / M_PI, 0,
+                                          0.0f); // Pitch (degrees)
+
+  point.tilt.z = 0; // Yaw cannot be determined from the accelerometer alone
+}
+
+void Qmi8658C::populateOrientation(DataPoint &point, const float &deltaTime) {
+  constexpr float ALPHA = 0.98f; // Complementary filter weight
+
+  // Integrate gyro data to estimate angular changes
+  lastOrientation.x += point.gyroscope.x * deltaTime; // Roll (X-axis)
+  lastOrientation.y += point.gyroscope.y * deltaTime; // Pitch (Y-axis)
+  lastOrientation.z += point.gyroscope.z * deltaTime; // Yaw (Z-axis)
+
+  // Calculate pitch and roll from accelerometer (for tilt correction)
+  const float accelPitch =
+      std::atan2(point.accelerometer.x,
+                 std::sqrt(point.accelerometer.y * point.accelerometer.y +
+                           point.accelerometer.z * point.accelerometer.z));
+  const float accelRoll =
+      std::atan2(point.accelerometer.y,
+                 std::sqrt(point.accelerometer.x * point.accelerometer.x +
+                           point.accelerometer.z * point.accelerometer.z));
+
+  // Use complementary filter to fuse gyro and accelerometer for roll and pitch
+  lastOrientation.x =
+      ALPHA * lastOrientation.x + (1 - ALPHA) * (accelRoll * 180.0f / M_PI);
+  lastOrientation.y =
+      ALPHA * lastOrientation.y + (1 - ALPHA) * (accelPitch * 180.0f / M_PI);
+
+  // Apply Kalman filters to smooth roll, pitch, and yaw
+  point.orientation.x = kalmanOrientationX.estimate(
+      lastOrientation.x, point.gyroscope.x, deltaTime);
+  point.orientation.y = kalmanOrientationY.estimate(
+      lastOrientation.y, point.gyroscope.y, deltaTime);
+  point.orientation.z = kalmanOrientationZ.estimate(
+      lastOrientation.z, point.gyroscope.z, deltaTime);
+}
+
+void Qmi8658C::populateRawAccelerometer(DataPoint &point, const uint8_t *data) {
   constexpr float ACCEL_SCALE{-2.0f * 9.81 /
-                              32768.0f};         // For ±2G range, in m/s^2
-  constexpr float GYRO_SCALE{128.0f / 32768.0f}; // For ±128DPS range
+                              32768.0f}; // For ±2G range, in m/s^2
   point.accelerometer.x =
       static_cast<float>(static_cast<int16_t>((data[1] << 8) | data[0])) *
       ACCEL_SCALE; // X
@@ -212,7 +305,10 @@ void Qmi8658C::onSample(DataPoint &point) {
   point.accelerometer.z =
       static_cast<float>(static_cast<int16_t>((data[5] << 8) | data[4])) *
       ACCEL_SCALE; // Z
+}
 
+void Qmi8658C::populateRawGyroscope(DataPoint &point, const uint8_t *data) {
+  constexpr float GYRO_SCALE{128.0f / 32768.0f}; // For ±128DPS range
   point.gyroscope.x =
       static_cast<float>(static_cast<int16_t>((data[7] << 8) | data[6])) *
       GYRO_SCALE; // X
@@ -222,82 +318,5 @@ void Qmi8658C::onSample(DataPoint &point) {
   point.gyroscope.z =
       static_cast<float>(static_cast<int16_t>((data[11] << 8) | data[10])) *
       GYRO_SCALE; // Z
-
-  point.acceleration = {0, 0, 0};
-  point.orientation = {0, 0, 0};
-  point.tilt = {0, 0, 0};
-
-  populateAcceleration(point);
-  populateOrientation(point);
-  populateTilt(point);
-}
-
-void Qmi8658C::populateAcceleration(DataPoint &point) {
-  static int64_t lastTime = esp_timer_get_time();
-  const int64_t currentTime = esp_timer_get_time();
-  const float deltaTime =
-      static_cast<float>(currentTime - lastTime) / 1000000.0f;
-  lastTime = currentTime;
-
-  // Calculate angular acceleration as the rate of change of angular velocity
-  point.acceleration.x = (point.gyroscope.x - lastGyro.x) / deltaTime;
-  point.acceleration.y = (point.gyroscope.y - lastGyro.y) / deltaTime;
-  point.acceleration.z = (point.gyroscope.z - lastGyro.z) / deltaTime;
-
-  // Update last gyroscope values for next iteration
-  lastGyro = point.gyroscope;
-}
-
-void Qmi8658C::populateTilt(DataPoint &point) {
-  constexpr float g = 9.81f; // Convert from m/s^2 to g units
-  const float ax = point.accelerometer.x / g;
-  const float ay = point.accelerometer.y / g;
-  const float az = point.accelerometer.z / g;
-
-  // Calculate roll angle (rotation around X-axis)
-  point.tilt.x = atan2(ay, az);
-
-  // Calculate pitch angle (rotation around Y-axis)
-  point.tilt.y = atan2(-ax, sqrt(ay * ay + az * az));
-
-  // Convert radians to degrees
-  point.tilt.x *= 180.0f / M_PI;
-  point.tilt.y *= 180.0f / M_PI;
-  point.tilt.z = 0; // Can't determine yaw from accelerometer alone
-}
-
-void Qmi8658C::populateOrientation(DataPoint &point) {
-  constexpr float ALPHA = 0.98f;
-  static int64_t lastTime = esp_timer_get_time();
-  const int64_t currentTime = esp_timer_get_time();
-  const float deltaTime =
-      static_cast<float>(currentTime - lastTime) / 1000000.0f;
-  lastTime = currentTime;
-
-  // Integrate gyro data to get angles
-  orientation.x += point.gyroscope.x * deltaTime;
-  orientation.y += point.gyroscope.y * deltaTime;
-  orientation.z += point.gyroscope.z * deltaTime;
-
-  // Use accelerometer to estimate tilt (roll and pitch)
-  const float accelPitch =
-      std::atan2(point.accelerometer.x,
-                 static_cast<float>(
-                     std::sqrt(point.accelerometer.y * point.accelerometer.y +
-                               point.accelerometer.z * point.accelerometer.z)));
-  const float accelRoll =
-      std::atan2(point.accelerometer.y,
-                 static_cast<float>(
-                     std::sqrt(point.accelerometer.x * point.accelerometer.x +
-                               point.accelerometer.z * point.accelerometer.z)));
-
-  // Correct gyroscope orientation using the accelerometer (complementary
-  // filter)
-  orientation.x = ALPHA * orientation.x + (1 - ALPHA) * accelPitch;
-  orientation.y = ALPHA * orientation.y + (1 - ALPHA) * accelRoll;
-
-  point.orientation.x = orientation.x;
-  point.orientation.y = orientation.y;
-  point.orientation.z = orientation.z;
 }
 } // namespace Hilton
