@@ -39,7 +39,7 @@ ChainOfResponsibility<Qmi8658C::DataPoint,
       constexpr auto Y_RELEASED_THRESHOLD{2.0f}; // degrees
       constexpr auto Y_DOT_THRESHOLD{55.0f};     // degrees per second
       constexpr auto Z_START_THRESHOLD{10.0f};   // degrees
-      constexpr auto Z_STOP_THRESHOLD{1.0f};     // degrees
+      constexpr auto Z_STOP_THRESHOLD{8.0f};     // degrees (hysteresis)
       constexpr auto X_MOUSE_THRESHOLD{2.0f};    // degrees
       constexpr auto X_MOUSE_SCALE{7.0f};        // ints/degree
       constexpr auto Y_MOUSE_THRESHOLD{2.0f};    // degrees
@@ -49,8 +49,8 @@ ChainOfResponsibility<Qmi8658C::DataPoint,
           data.tilt.x - context.deltaXFilter.getFilteredValue();
       const float deltaY =
           data.tilt.y - context.deltaYFilter.getFilteredValue();
-      const float deltaZ =
-          data.orientation.z - context.deltaZFilter.getFilteredValue();
+      // For scroll detection, use absolute orientation angle (Z) rather than high-pass delta
+      const float absOrientZ = std::abs(data.orientation.z);
       const bool isLeftButtonPressed = isButtonPressed(context.leftButton);
       const bool isMiddleButtonPressed = isButtonPressed(context.middleButton);
       const bool isRightButtonPressed = isButtonPressed(context.rightButton);
@@ -62,10 +62,9 @@ ChainOfResponsibility<Qmi8658C::DataPoint,
       const bool isYButtonActionSpeed =
           std::abs(data.gyroscope.y) > Y_DOT_THRESHOLD;
 
-      if (std::abs(deltaZ) > Z_START_THRESHOLD && !context.isWheelScrolling) {
+      if (absOrientZ > Z_START_THRESHOLD && !context.isWheelScrolling) {
         context.isWheelScrolling = true;
-      } else if (std::abs(deltaZ) < Z_STOP_THRESHOLD &&
-                 context.isWheelScrolling) {
+      } else if (absOrientZ < Z_STOP_THRESHOLD && context.isWheelScrolling) {
         context.isWheelScrolling = false;
       }
 
@@ -109,7 +108,9 @@ ChainOfResponsibility<Qmi8658C::DataPoint,
         context.event.deltaY = y;
         context.event.wheel = 0;
       } else if (context.isWheelScrolling) {
-        float scaledWheel = 2.5f * deltaZ;
+        // Scale wheel proportionally to absolute orientation angle around Z, clamped to 90°
+        float clampedAngle = std::clamp(data.orientation.z, -90.0f, 90.0f);
+        float scaledWheel = (127.0f / 90.0f) * clampedAngle;
         scaledWheel = std::clamp(scaledWheel, -127.0f, 127.0f);
         context.event.wheel = static_cast<int8_t>(std::round(scaledWheel));
         context.event.deltaX = 0;
@@ -143,6 +144,15 @@ ChainOfResponsibility<Qmi8658C::DataPoint,
         }};
 
 ChainOfResponsibility<Qmi8658C::DataPoint,
+                      MouseEventDetector::TrackingContext>::Callback printRaw{
+    [](const Qmi8658C::DataPoint &data,
+       const MouseEventDetector::TrackingContext &context) -> bool {
+      printf("Accel (%6.2f %6.2f %6.2f), Gyro (%6.2f, %6.2f, %6.2f)\n",
+             data.accelerometer.x, data.accelerometer.y, data.accelerometer.z,
+             data.gyroscope.x, data.gyroscope.y, data.gyroscope.z);
+      return false;
+    }};
+ChainOfResponsibility<Qmi8658C::DataPoint,
                       MouseEventDetector::TrackingContext>::Callback printStats{
     [](const Qmi8658C::DataPoint &data,
        const MouseEventDetector::TrackingContext &context) -> bool {
@@ -151,7 +161,7 @@ ChainOfResponsibility<Qmi8658C::DataPoint,
              context.leftButton.getStateName().c_str(),
              context.middleButton.getStateName().c_str(),
              context.rightButton.getStateName().c_str());
-      return true;
+      return false;
     }};
 
 static void IRAM_ATTR gpioIsrHandler(void *p) {
@@ -194,10 +204,11 @@ MouseEventDetector::MouseEventDetector(
     ESP_LOGI("GPIO", "GPIOs configured: INT1=%d, INT2=%d", int1Pin, int2Pin);
   }
 
-  // chainOfResponsibility.addHandler(movementHandler);
+  // Register handlers: functional first, then optional debug printers
   chainOfResponsibility.addHandler(clickHandler);
   chainOfResponsibility.addHandler(cleanupEventsHandler);
-  chainOfResponsibility.addHandler(printStats);
+  chainOfResponsibility.addHandler(printStats); // non-blocking debug
+  // chainOfResponsibility.addHandler(printRaw); // verbose raw data if needed
 }
 
 void MouseEventDetector::run() {
