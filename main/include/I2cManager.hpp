@@ -1,7 +1,8 @@
 #pragma once
 #include "esp_err.h"
 #include "hal/i2c_types.h"
-#include "soc/gpio_num.h"
+
+#include <driver/gpio.h>
 
 namespace Hilton {
 class I2cManager

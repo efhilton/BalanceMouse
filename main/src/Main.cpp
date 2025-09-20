@@ -11,8 +11,11 @@
 #include <I2cManager.hpp>
 #include <MouseEventDetector.hpp>
 #include <Qmi8658C.hpp>
-#include <TinyUsbHID.hpp>
+// #include <BleHidMouse.hpp>
+#include <WebServer.hpp>
 #include <memory>
+#include <any>
+#include <typeinfo>
 
 static constexpr auto TAG{"BALANCE_BOARD"};
 
@@ -36,8 +39,8 @@ using BalanceBoardConfig = struct {
 
 inline void onMouseData(const Hilton::MouseEvent event,
                         const std::any &userdata) {
-  auto hid = std::any_cast<std::shared_ptr<Hilton::TinyUsbHID>>(userdata);
-  hid->sendHidReport(event.buttons, event.deltaX, event.deltaY, event.wheel);
+  // auto ble = std::any_cast<std::shared_ptr<Hilton::BleHidMouse>>(userdata);
+  // ble->sendHidReport(event.buttons, event.deltaX, event.deltaY, event.wheel);
 }
 
 extern "C" void app_main(void) {
@@ -53,13 +56,17 @@ extern "C" void app_main(void) {
   std::shared_ptr<Hilton::Qmi8658C> qmi8658c;
   std::unique_ptr<Hilton::I2cManager> i2cManager;
   std::shared_ptr<Hilton::MouseEventDetector> mouseEventDetector;
-  std::shared_ptr<Hilton::TinyUsbHID> hid;
-  Hilton::Finalizer f{[&qmi8658c, &i2cManager, &mouseEventDetector, &hid]() {
-    if (hid) {
-      hid->end();
-      hid.reset();
-      hid = nullptr;
+  // std::shared_ptr<Hilton::BleHidMouse> ble;
+  std::unique_ptr<Hilton::WebServer> web;
+  Hilton::Finalizer f{[&]() {
+    if (web) {
+      web->stop();
+      web.reset();
     }
+    // if (ble) {
+    //   ble->end();
+    //   ble.reset();
+    // }
     if (mouseEventDetector) {
       mouseEventDetector.reset();
       mouseEventDetector = nullptr;
@@ -98,10 +105,13 @@ extern "C" void app_main(void) {
   mouseEventDetector = std::make_shared<Hilton::MouseEventDetector>(
       qmi8658c, config.int1_pin, config.int2_pin);
 
-  hid = std::make_shared<Hilton::TinyUsbHID>();
-  hid->begin();
+  // ble = std::make_shared<Hilton::BleHidMouse>();
+  // ble->begin("BalanceBoard Mouse");
 
-  mouseEventDetector->eventCallbackService.addCallback(onMouseData, hid);
+  web = std::make_unique<Hilton::WebServer>();
+  web->start("BalanceBoard-Setup", "balance123");
+
+  mouseEventDetector->eventCallbackService.addCallback(onMouseData, nullptr);
   mouseEventDetector->run();
 
   // Main task can do other things or just wait

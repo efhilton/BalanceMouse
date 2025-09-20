@@ -1,7 +1,6 @@
 idf_component_register(
         SRCS
-        "src/TinyUsbHID.cpp"
-        "src/ChainOfResponsibility.cpp"
+        "src/WebServer.cpp"
         "src/I2cManager.cpp"
         "src/Main.cpp"
         "src/MouseEventDetector.cpp"
@@ -15,4 +14,11 @@ idf_component_register(
         REQUIRES
         "driver"
         "esp_timer"
+        "nvs_flash"
+        "esp_wifi"
+        "esp_netif"
+        "esp_event"
+        "esp_http_server"
+        "bt"
+        "esp_hid"
 )
