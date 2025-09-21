@@ -3,3 +3,6 @@
 /build/
 /cmake-build-debug-esp-idf/
 /dependencies.lock
+/test/build/
+/components/*/test/build/
+/components/*/build/

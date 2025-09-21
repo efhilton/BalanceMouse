@@ -1,10 +1,12 @@
 #pragma once
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
+
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <string>
+#include <utility>
 
 namespace Hilton {
 
@@ -14,9 +16,9 @@ public:
     enum class State { Idle, Pressed, Released };
     enum class Event { MouseDown, MouseUp, TimerEvent };
 
-    MouseButtonStateMachine(const std::string &myName)
+    explicit MouseButtonStateMachine(std::string myName)
         : state(State::Idle)
-        , name(myName)
+        , name(std::move(myName))
     {
         // Create a FreeRTOS timer for this button
         timer = xTimerCreate(
@@ -63,8 +65,8 @@ public:
         }
     }
 
-    State getState() const { return state; }
-    std::string getStateName() const
+    [[nodiscard]] State getState() const { return state; }
+    [[nodiscard]] std::string getStateName() const
     {
         switch (state) {
         case State::Idle:
@@ -93,12 +95,12 @@ private:
     }
 
     // FreeRTOS timer callback (static because FreeRTOS timers require static callbacks)
-    static void timerCallback(const TimerHandle_t xTimer)
+    static void timerCallback(TimerHandle_t xTimer)
     {
-        auto *instance = static_cast<MouseButtonStateMachine *>(pvTimerGetTimerID(xTimer));
-        if (instance) {
-            instance->handleEvent(Event::TimerEvent);
-        }
+        const auto instance = static_cast<MouseButtonStateMachine *>(pvTimerGetTimerID(xTimer));
+        if (!instance)
+            return;
+        instance->handleEvent(Event::TimerEvent);
     }
 };
 } // namespace Hilton

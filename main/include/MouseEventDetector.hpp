@@ -1,12 +1,13 @@
 #pragma once
-#include "soc/gpio_num.h"
+#include <driver/gpio.h>
+
 #include <ChainOfResponsibility.hpp>
 #include <HighPassFilter.hpp>
 #include <MouseButtonStateMachine.hpp>
-#include <Qmi8658C.hpp>
-#include <QueuedNotificationService.hpp>
 #include <memory>
 #include <string>
+#include <Qmi8658C.hpp>
+#include <QueuedNotificationService.hpp>
 
 namespace Hilton {
 enum MouseButtonMask {
@@ -67,7 +68,8 @@ public:
         const std::shared_ptr<Qmi8658C> &qmi8658C, gpio_num_t int1Pin, gpio_num_t int2Pin);
     void run();
 
-    QueuedNotificationService<MouseEvent> eventCallbackService;
+    QueuedNotificationService<MouseButtonStateMachine::State, MouseEvent, std::any>
+        eventCallbackService;
 
     static constexpr auto TAG{"MOUSE_EVENT_DETECTOR"};
 

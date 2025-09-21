@@ -1,5 +1,5 @@
 
-#include <StringUtilities.hpp>
+#include <../include/StringUtilities.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
