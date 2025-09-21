@@ -156,12 +156,17 @@ MouseHandler printDetectedEvents{
 
 static void IRAM_ATTR gpioIsrHandler(void *p)
 {
-    eventCounter.fetch_add(1);
     auto *self = static_cast<MouseEventDetector *>(p);
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xEventGroupSetBitsFromISR(self->dataEventGroup, DATA_AVAILABLE, &xHigherPriorityTaskWoken);
-    if (xHigherPriorityTaskWoken) {
-        portYIELD_FROM_ISR();
+    // Only signal when an INT line indicates data-ready (active low assumed)
+    int level1 = gpio_get_level(self->int1Pin);
+    int level2 = gpio_get_level(self->int2Pin);
+    if (level1 == 0 || level2 == 0) {
+        eventCounter.fetch_add(1);
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xEventGroupSetBitsFromISR(self->dataEventGroup, DATA_AVAILABLE, &xHigherPriorityTaskWoken);
+        if (xHigherPriorityTaskWoken) {
+            portYIELD_FROM_ISR();
+        }
     }
 }
 
@@ -180,7 +185,9 @@ MouseEventDetector::MouseEventDetector(
     gpio_reset_pin(int2Pin);
 
     gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_ANYEDGE; // Use GPIO_INTR_POSEDGE or GPIO_INTR_NEGEDGE if only
+    // Configure interrupt to trigger only on the data-ready assertion edge.
+    // QMI8658C INT can be configured as active-low (recommended); use falling edge with pull-up.
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
                                            // one edge is needed
     io_conf.pin_bit_mask = (1ULL << int1Pin) | (1ULL << int2Pin);
     io_conf.mode = GPIO_MODE_INPUT;
@@ -242,25 +249,22 @@ void MouseEventDetector::run()
                     DATA_AVAILABLE | DO_SHUTDOWN,
                     pdTRUE,
                     false,
-                    pdMS_TO_TICKS(20));
+                    portMAX_DELAY);
                 if ((bits & DO_SHUTDOWN) == DO_SHUTDOWN) {
                     break;
                 }
                 if ((bits & DATA_AVAILABLE) == DATA_AVAILABLE) {
                     if (eventCounter.load() > 0) {
-                        ESP_LOGE(TAG, "New data available with counter = %lu", eventCounter.load());
+                        ESP_LOGD(TAG, "Data-ready event(s): %lu", eventCounter.load());
                     }
-                } else {
-                    if (eventCounter.load() > 0) {
-                        ESP_LOGI(TAG, "Timeout with counter = %lu", eventCounter.load());
+                    // Read sample only when data-ready triggered
+                    if (self->qmi8658c->onSample(point) == ESP_OK) {
+                        self->chainOfResponsibility.handle(point, trackingContext);
+                    } else {
+                        ESP_LOGE(TAG, "Failed to process data (%s)", esp_err_to_name(ret));
                     }
                 }
-
-                if (self->qmi8658c->onSample(point) == ESP_OK) {
-                    self->chainOfResponsibility.handle(point, trackingContext);
-                } else {
-                    ESP_LOGE(TAG, "Failed to process data (%s)", esp_err_to_name(ret));
-                }
+                // If not DATA_AVAILABLE, just loop back and wait again (portMAX_DELAY).
             }
         },
         "board_analitics",

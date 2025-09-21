@@ -9,6 +9,8 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
+#include <functional>
 
 using namespace Hilton;
 
@@ -36,15 +38,15 @@ TEST_CASE("QueuedNotificationService basic callback invocation", "[queued]")
     g_sem = xSemaphoreCreateBinary();
     TEST_ASSERT_NOT_NULL(g_sem);
 
-    QueuedNotificationService<TestKey, Payload> service(4, "QNS_TEST");
-
-    auto cb = [](const Payload &data, const std::any & /*userData*/) {
+    QueuedNotificationService<TestKey, Payload, std::any> service(4, "QNS_TEST");
+    
+    OnDataCallback<TestKey, Payload, std::any> cb = [](const TestKey &key, const Payload &data,  const std::any /*ignored*/) {
         g_lastValue = data.value;
         g_callbackCount++;
         xSemaphoreGive(g_sem);
     };
 
-    const auto id = service.addCallback(TestKey::Alpha, cb);
+    const auto id = service.addCallback(TestKey::Alpha,cb, nullptr);
     TEST_ASSERT_NOT_EQUAL_MESSAGE(-1, static_cast<int>(id), "Failed to add callback");
 
     // Act

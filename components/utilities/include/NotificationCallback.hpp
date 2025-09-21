@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 template<typename KeyT, typename DataT, typename UserT>
 using OnDataCallback
