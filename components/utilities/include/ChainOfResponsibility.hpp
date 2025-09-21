@@ -10,7 +10,7 @@ template<typename DataDt, typename UserDt>
 class ChainOfResponsibility
 {
 public:
-    using CorHandler = std::function<bool(const DataDt &, const UserDt &)>;
+    using CorHandler = std::function<bool(const DataDt &, UserDt &)>;
 
     void addHandler(const CorHandler &handler)
     {

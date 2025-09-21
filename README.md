@@ -37,9 +37,11 @@ This project uses the ESP-IDF Unit Test App to run component tests. Tests live u
 - Component: utilities
   - QueuedNotificationService unit tests
 
-Key points:
+Important: The idf.py -T option is only available in newer ESP-IDF versions. If your idf.py does not recognize -T, either update ESP-IDF or use the fallback method described below.
+
+Option A — Using idf.py -T (newer ESP-IDF):
 - Normal app builds do not include tests.
-- To run tests, use the Unit Test App via idf.py -T.
+- Run the Unit Test App by selecting tests with -T.
 
 Run only the utilities component tests:
    idf.py -T utilities -p <PORT> flash monitor
@@ -47,6 +49,22 @@ Run only the utilities component tests:
 Run all discovered component tests in the project:
    idf.py -T all -p <PORT> flash monitor
 
+Option B — Fallback for older ESP-IDF (no -T support):
+You can run tests using ESP-IDF’s Unit Test App project and point it to this repository’s components.
+
+1) Open an ESP-IDF environment (run export.sh / export.ps1).
+2) Change directory to the Unit Test App provided by ESP-IDF:
+   cd "$IDF_PATH/examples/system/unit_test"
+3) Configure CMake to discover this project’s components and select which tests to run by passing these options to idf.py:
+   -D EXTRA_COMPONENT_DIRS="/home/efhilton/CLionProjects/balance_board/components" \
+   -D TEST_COMPONENTS="utilities"
+
+Example commands to build, flash, and monitor only the utilities tests on the target:
+   idf.py -D EXTRA_COMPONENT_DIRS="/home/efhilton/CLionProjects/balance_board/components" -D TEST_COMPONENTS="utilities" -p <PORT> flash monitor
+
+To run all tests available to the Unit Test App (including those discovered in this repo via EXTRA_COMPONENT_DIRS):
+   idf.py -D EXTRA_COMPONENT_DIRS="/home/efhilton/CLionProjects/balance_board/components" -D TEST_COMPONENTS=all -p <PORT> flash monitor
+
 Notes:
 - The Unit Test App will build and flash a special test firmware, then run the Unity tests and print results in the serial monitor.
-- After running tests, run a normal build/flash (without -T) to put your regular firmware back on the device.
+- After running tests, return to your project directory and do a normal build/flash to restore your regular firmware.

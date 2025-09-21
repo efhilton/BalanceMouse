@@ -1,6 +1,8 @@
 #pragma once
 #include <driver/gpio.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include <ChainOfResponsibility.hpp>
 #include <HighPassFilter.hpp>
 #include <MouseButtonStateMachine.hpp>
@@ -10,13 +12,13 @@
 #include <QueuedNotificationService.hpp>
 
 namespace Hilton {
-enum MouseButtonMask {
-    LeftButton = 0x01,
-    RightButton = 0x02,
-    MiddleButton = 0x04,
-    WheelButton = 0x08
+enum MouseButtonMask : EventBits_t {
+    None = 0,
+    LeftButton = BIT0,
+    RightButton = BIT1,
+    MiddleButton = BIT2,
+    WheelButton = BIT3
 };
-
 /** Mouse events: The series of detected mouse events.
  * Each event is a combination of the following:
  * - Mouse button(s) pressed/released
@@ -41,7 +43,7 @@ enum MouseButtonMask {
  */
 struct MouseEvent
 {
-    uint8_t buttons;
+    EventBits_t buttons;
     int8_t deltaX; // -128 to 127
     int8_t deltaY; // -128 to 127
     int8_t wheel;  // -128 to 127
@@ -78,7 +80,6 @@ public:
     gpio_num_t int2Pin;
 
     ChainOfResponsibility<Qmi8658C::DataPoint, TrackingContext> chainOfResponsibility;
-    TrackingContext trackingContext;
     EventGroupHandle_t dataEventGroup;
 };
 } // namespace Hilton
