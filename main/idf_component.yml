@@ -2,9 +2,12 @@
 dependencies:
   ## Required IDF version
   idf:
-    version: '>=4.1.0'
+    version: '>=5.5.0'
   utilities:
     path: ../components/utilities
+    version: '>=1.0.0'
+  filters:
+    path: ../components/filters
     version: '>=1.0.0'
 
   # # Put list of dependencies here

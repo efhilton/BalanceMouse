@@ -2,41 +2,51 @@
 
 ## Important Links
 
-- https://www.waveshare.com/wiki/ESP32-S3-Matrix
+- Waveshare ESP32-S3-Matrix: https://www.waveshare.com/wiki/ESP32-S3-Matrix
 
-## Testing
+## Build, Flash, and Monitor (ESP-IDF idf.py)
 
-Tests are located in the `test` directory under each component. Currently, there are tests for:
+Prerequisites:
+- ESP-IDF installed and environment exported (run export.sh / export.ps1 from your ESP-IDF install).
+- Board connected over USB. Know its serial port (e.g., /dev/ttyACM0 on Linux, COMx on Windows, /dev/cu.usbmodem… on macOS).
 
-- Component: utilities
-    - QueuedNotificationService unit tests
-    - Misc utility function tests
+Typical workflow from the project root:
 
-### Running Tests
+1) Select target (example uses ESP32-S3; change if you use a different chip):
+   idf.py set-target esp32s3
 
-The project uses the ESP-IDF Unit Test App for running tests. To run:
+2) Configure (optional):
+   idf.py menuconfig
 
-1. Open an ESP-IDF shell (run `export.sh` or `export.bat`)
+3) Build the application:
+   idf.py build
 
-2. Build the entire project with tests enabled at the top-level:
-   ```bash
-   idf.py -DTEST_MODE=ON build
-   ```
+4) Flash and open serial monitor:
+   idf.py -p <PORT> flash monitor
 
-3. Flash the firmware (including tests) to the board and monitor the output:
-   ```bash
-   idf.py flash monitor
-   ```
+- Exit monitor with Ctrl+].
+- If you don’t specify -p, ESP-IDF will try to auto-detect.
 
-4. The test results will automatically be displayed in the serial monitor output showing which tests passed or failed.
-
-### Notes
-- If you want to clean the build directory before running the tests, you can use:
-  ```bash
+Clean builds:
+- Remove build artifacts entirely (useful if switching targets/IDF versions):
   idf.py fullclean
-  ```
-  
-- To run or test specific components instead of the whole project, navigate to that component's directory and run:
-  ```bash
-  idf.py -DTEST_MODE=ON build flash monitor
-  ```
+
+## Running Unit Tests (ESP-IDF Unit Test App)
+
+This project uses the ESP-IDF Unit Test App to run component tests. Tests live under each component’s test/ folder. Currently available:
+- Component: utilities
+  - QueuedNotificationService unit tests
+
+Key points:
+- Normal app builds do not include tests.
+- To run tests, use the Unit Test App via idf.py -T.
+
+Run only the utilities component tests:
+   idf.py -T utilities -p <PORT> flash monitor
+
+Run all discovered component tests in the project:
+   idf.py -T all -p <PORT> flash monitor
+
+Notes:
+- The Unit Test App will build and flash a special test firmware, then run the Unity tests and print results in the serial monitor.
+- After running tests, run a normal build/flash (without -T) to put your regular firmware back on the device.

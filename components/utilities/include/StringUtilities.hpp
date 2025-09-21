@@ -13,9 +13,10 @@ namespace efhilton {
  *   KeyAndValue kv("name", "John");
  *   std::cout << kv.toString(); // Prints "name: John"
  */
-class KeyAndValue {
+class KeyAndValue
+{
 public:
-  /**
+    /**
    * @brief Construct a new Key And Value object
    * @param key The key string
    * @param value The value string
@@ -23,10 +24,12 @@ public:
    * Example:
    *   KeyAndValue kv("name", "John");
    */
-  KeyAndValue(std::string key, std::string value)
-      : key_(std::move(key)), value_(std::move(value)) {}
+    KeyAndValue(std::string key, std::string value)
+        : key_(std::move(key))
+        , value_(std::move(value))
+    {}
 
-  /**
+    /**
    * @brief Get the key string
    * @return std::string The key
    *
@@ -34,9 +37,9 @@ public:
    *   KeyAndValue kv("name", "John");
    *   std::string key = kv.getKey(); // Returns "name"
    */
-  [[nodiscard]] std::string getKey() const { return key_; }
+    [[nodiscard]] std::string getKey() const { return key_; }
 
-  /**
+    /**
    * @brief Get the value string
    * @return std::string The value
    *
@@ -44,9 +47,9 @@ public:
    *   KeyAndValue kv("name", "John");
    *   std::string value = kv.getValue(); // Returns "John"
    */
-  [[nodiscard]] std::string getValue() const { return value_; }
+    [[nodiscard]] std::string getValue() const { return value_; }
 
-  /**
+    /**
    * @brief Set the value string
    * @param value New value to set
    *
@@ -54,9 +57,9 @@ public:
    *   KeyAndValue kv("name", "John");
    *   kv.setValue("Jane"); // Changes value to "Jane"
    */
-  void setValue(const std::string &value) { value_ = value; }
+    void setValue(const std::string &value) { value_ = value; }
 
-  /**
+    /**
    * @brief Convert to string representation
    * @return std::string Formatted as "key: value"
    *
@@ -64,26 +67,29 @@ public:
    *   KeyAndValue kv("name", "John");
    *   std::string str = kv.toString(); // Returns "name: John"
    */
-  [[nodiscard]] std::string toString() const { return key_ + ": " + value_; }
+    [[nodiscard]] std::string toString() const { return key_ + ": " + value_; }
 
 private:
-  std::string key_;
-  std::string value_;
+    std::string key_;
+    std::string value_;
 };
 
-class StringUtilities {
+class StringUtilities
+{
 public:
-  static constexpr size_t PAGE_WIDTH{80};
-  static void printBanner(
-      const std::string &title,
-      const std::variant<std::string, const std::vector<KeyAndValue>> &content,
-      size_t length = PAGE_WIDTH, char leftPad = '(', char rightPad = ')',
-      const std::string &emoji = "🎺");
-  static std::string trimString(const std::string &str);
-  static std::string padString(const std::string &str, size_t length,
-                               char leftPad = ' ', char rightPad = ' ');
-  static std::string capitalizeString(const std::string &str);
-  static std::string formatKeyAndValue(const KeyAndValue &kv, size_t keyLength);
+    static constexpr size_t PAGE_WIDTH{80};
+    static void printBanner(
+        const std::string &title,
+        const std::variant<std::string, const std::vector<KeyAndValue>> &content,
+        size_t length = PAGE_WIDTH,
+        char leftPad = '(',
+        char rightPad = ')',
+        const std::string &emoji = "🎺");
+    static std::string trimString(const std::string &str);
+    static std::string padString(
+        const std::string &str, size_t length, char leftPad = ' ', char rightPad = ' ');
+    static std::string capitalizeString(const std::string &str);
+    static std::string formatKeyAndValue(const KeyAndValue &kv, size_t keyLength);
 };
 
 } // namespace efhilton
