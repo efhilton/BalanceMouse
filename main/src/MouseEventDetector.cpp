@@ -185,10 +185,8 @@ MouseEventDetector::MouseEventDetector(
     gpio_reset_pin(int2Pin);
 
     gpio_config_t io_conf = {};
-    // Configure interrupt to trigger only on the data-ready assertion edge.
-    // QMI8658C INT can be configured as active-low (recommended); use falling edge with pull-up.
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-                                           // one edge is needed
+    // Use ANYEDGE to ensure we get an ISR regardless of polarity; gate inside ISR by level.
+    io_conf.intr_type = GPIO_INTR_ANYEDGE;
     io_conf.pin_bit_mask = (1ULL << int1Pin) | (1ULL << int2Pin);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;      // Ensure this matches your hardware setup
@@ -199,6 +197,12 @@ MouseEventDetector::MouseEventDetector(
         ESP_LOGE("GPIO", "Failed to configure GPIOs: %s", esp_err_to_name(ret));
     } else {
         ESP_LOGI("GPIO", "GPIOs configured: INT1=%d, INT2=%d", int1Pin, int2Pin);
+        // Also set per-pin interrupt type explicitly (robustness across IDF versions)
+        gpio_set_intr_type(int1Pin, GPIO_INTR_ANYEDGE);
+        gpio_set_intr_type(int2Pin, GPIO_INTR_ANYEDGE);
+        int lvl1 = gpio_get_level(int1Pin);
+        int lvl2 = gpio_get_level(int2Pin);
+        ESP_LOGI("GPIO", "Initial INT levels: INT1=%d INT2=%d", lvl1, lvl2);
     }
 
     // Register handlers: functional first, then optional debug printers
@@ -236,12 +240,19 @@ void MouseEventDetector::run()
             esp_err_t ret = gpio_isr_handler_add(self->int1Pin, gpioIsrHandler, self);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to add ISR handler for INT1: %s", esp_err_to_name(ret));
+            } else {
+                gpio_intr_enable(self->int1Pin);
             }
 
             ret = gpio_isr_handler_add(self->int2Pin, gpioIsrHandler, self);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to add ISR handler for INT2: %s", esp_err_to_name(ret));
+            } else {
+                gpio_intr_enable(self->int2Pin);
             }
+            int lvl1_rt = gpio_get_level(self->int1Pin);
+            int lvl2_rt = gpio_get_level(self->int2Pin);
+            ESP_LOGI(TAG, "ISR installed. Current INT levels: INT1=%d INT2=%d", lvl1_rt, lvl2_rt);
             ESP_LOGI(TAG, "Starting data processing task");
             while (true) {
                 auto bits = xEventGroupWaitBits(
