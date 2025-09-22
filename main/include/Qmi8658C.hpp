@@ -3,6 +3,11 @@
 #include "esp_log.h"
 #include <KalmanFilter.hpp>
 #include <driver/i2c.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/task.h"
+#include <driver/gpio.h>
+#include <QueuedNotificationService.hpp>
 
 namespace Hilton {
 class Qmi8658C {
@@ -143,8 +148,20 @@ private:
   esp_err_t readMultipleRegs(uint8_t startReg, uint8_t *data, size_t len) const;
 
 public:
+  enum class QueueKey { DataReady };
+  enum EventBits : EventBits_t {
+    DO_STOP = BIT0,
+    DATA_IS_AVAILABLE = BIT1,
+    IS_RUNNING = BIT2,
+    IS_STOPPED = BIT3,
+  };
+
   explicit Qmi8658C(i2c_port_t i2CPort);
-  [[nodiscard]] esp_err_t initialize();
+  // Starts the QMI task and GPIO ISR setup; returns after task reports running
+  [[nodiscard]] esp_err_t initialize(gpio_num_t int1, gpio_num_t int2);
+  // Signals the task to stop and returns after it stops
+  void terminate();
+
   [[nodiscard]] esp_err_t disableAllSensors() const;
   static void populateRawAccelerometer(DataPoint &point, const uint8_t *data);
   static void populateRawGyroscope(DataPoint &point, const uint8_t *data);
@@ -154,6 +171,10 @@ public:
   void populateTilt(DataPoint &point, const float &deltaTime);
   esp_err_t onSample(DataPoint &point);
   [[nodiscard]] esp_err_t configure() const;
+
+  // Public data notification service (no internal consumer task)
+  QueuedNotificationService<QueueKey, DataPoint> dataService{16, "QMI8658C-DataQ", 2048, tskIDLE_PRIORITY + 2, false};
+
   Point lastOrientation{};
   Point lastGyro{};
   // Kalman filters for acceleration
@@ -169,5 +190,14 @@ public:
   KalmanFilter kalmanOrientationX; // Smoothing X-axis orientation (roll)
   KalmanFilter kalmanOrientationY; // Smoothing Y-axis orientation (pitch)
   KalmanFilter kalmanOrientationZ; // Smoothing Z-axis orientation (yaw)
+
+private:
+  static void IRAM_ATTR gpioIsrHandler(void *arg);
+  static void taskEntry(void *param);
+
+  EventGroupHandle_t eventGroup{nullptr};
+  TaskHandle_t taskHandle{nullptr};
+  gpio_num_t int1Pin{GPIO_NUM_NC};
+  gpio_num_t int2Pin{GPIO_NUM_NC};
 };
 } // namespace Hilton

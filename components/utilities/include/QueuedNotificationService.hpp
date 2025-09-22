@@ -5,13 +5,13 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include <NotificationCallback.hpp>
+#include <algorithm>
 #include <any>
 #include <atomic>
 #include <functional>
 #include <map>
 #include <set>
 #include <string>
-#include <algorithm>
 
 namespace Hilton {
 
@@ -76,7 +76,8 @@ public:
         const size_t queueSize,
         const char *taskName,
         const uint32_t stackSize = 2048,
-        const UBaseType_t priority = tskIDLE_PRIORITY + 1)
+        const UBaseType_t priority = tskIDLE_PRIORITY + 1,
+        const bool startProcessingTask = true)
         : callbacks()
         , queue(xQueueCreate(queueSize, sizeof(QueueItem)))
         , queueSize(queueSize)
@@ -90,16 +91,20 @@ public:
             ESP_LOGE(TAG, "Failed to create queue for notifications");
         }
 
-        // Start the processing task
-        auto created = xTaskCreate(
-            &QueuedNotificationService::notificationTask,
-            taskName,
-            stackSize,
-            this,
-            priority,
-            &taskHandle);
-        if (created != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create notification task");
+        // Start the processing task (optional)
+        if (startProcessingTask) {
+            auto created = xTaskCreate(
+                &QueuedNotificationService::notificationTask,
+                taskName,
+                stackSize,
+                this,
+                priority,
+                &taskHandle);
+            if (created != pdPASS) {
+                ESP_LOGE(TAG, "Failed to create notification task");
+            }
+        } else {
+            taskHandle = nullptr;
         }
     }
 
@@ -135,6 +140,9 @@ public:
 
         if (xSemaphoreTake(callbacksMutex, portMAX_DELAY) == pdTRUE) {
             const uint32_t id = nextId.fetch_add(1);
+            if (id >= std::numeric_limits<uint32_t>::max()) {
+                nextId = 0;
+            }
             callbacks.push_back(CallbackInfo{id, key, callback, userData});
             xSemaphoreGive(callbacksMutex);
             return id;
