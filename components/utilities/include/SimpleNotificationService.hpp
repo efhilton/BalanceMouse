@@ -1,36 +1,45 @@
 #pragma once
 #include "esp_log.h"
-#include <functional>
-#include <map>
 #include <NotificationCallback.hpp>
+#include <any>
+#include <atomic>
+#include <functional>
+#include <vector>
 
 namespace Hilton {
-template<typename T>
+template<typename DataDt, typename UserDt = void *>
 class SimpleNotificationService
 {
 public:
-
     SimpleNotificationService() = default;
 
-    int addCallback(OnDataCallback<T> &callback)
+    uint32_t addCallback(OnSimpleCallback<DataDt> &callback, UserDt userData = std::any())
     {
-        static int nextId{0};
-        const int id = nextId;
-        callbacks_[id] = callback;
-        nextId++;
+        static std::atomic<uint32_t> nextId{0};
+        const uint32_t id = nextId.fetch_add(1);
+        SimpleCallbackInfo<DataDt, UserDt> info{id, callback, userData};
+        callbacks_.push_back(info);
         return id;
     }
 
-    void eraseCallback(size_t id) { callbacks_.erase(id); }
+    void eraseCallback(uint32_t id)
+    {
+        callbacks_.erase(
+            std::remove_if(
+                callbacks_.begin(),
+                callbacks_.end(),
+                [id](const auto &info) { return info.id == id; }),
+            callbacks_.end());
+    }
 
-    void notify(const T &data)
+    void notify(const DataDt &data)
     {
         if (callbacks_.empty()) {
             return;
         }
-        for (auto &[id, callback] : callbacks_) {
+        for (const auto &[id, callback, userdata] : callbacks_) {
             try {
-                callback(data);
+                callback(data, userdata);
             } catch (const std::exception &e) {
                 ESP_LOGE(TAG, "Exception in callback id=%d: %s ---> Ignoring", id, e.what());
             } catch (...) {
@@ -41,7 +50,6 @@ public:
 
 private:
     static constexpr auto TAG{"SIMPLE_NOTIFICATION_SERVICE"};
-    std::map<size_t, OnDataCallback<T>> callbacks_{};
-    size_t next_id_{0};
+    std::vector<SimpleCallbackInfo<DataDt>> callbacks_{};
 };
 } // namespace Hilton
