@@ -140,7 +140,6 @@ void MouseEventDetector::onSensorDataIsReady(const KeyT &key, const DataT &data,
     // Static processing context and chain
     assert(key == Qmi8658C::QueueKey::DataReady);
     auto mouse = std::any_cast<std::shared_ptr<Mouse>>(userData);
-
     static ChainOfResponsibility<DataT, std::shared_ptr<Mouse>> chain{};
     static bool initialized = false;
     if (!initialized) {
@@ -153,13 +152,10 @@ void MouseEventDetector::onSensorDataIsReady(const KeyT &key, const DataT &data,
         initialized = true;
     }
 
-    // Process incoming data point and build up the Mouse
     chain.handle(data, mouse);
 }
 
 // Explicit instantiation for the currently used sensor types
-template void MouseEventDetector::onSensorDataIsReady<Qmi8658C::QueueKey, Qmi8658C::DataPoint, std::shared_ptr<Mouse>>(
-    const Qmi8658C::QueueKey &, const Qmi8658C::DataPoint &, const std::shared_ptr<Mouse> &);
 template void MouseEventDetector::onSensorDataIsReady<Qmi8658C::QueueKey, Qmi8658C::DataPoint>(
     const Qmi8658C::QueueKey &, const Qmi8658C::DataPoint &, const std::any &);
 

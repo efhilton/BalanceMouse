@@ -83,7 +83,7 @@ esp_err_t Qmi8658C::initialize(gpio_num_t int1, gpio_num_t int2)
     gpio_reset_pin(int1Pin);
     gpio_reset_pin(int2Pin);
     gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_ANYEDGE;
+    io_conf.intr_type = GPIO_INTR_POSEDGE;
     io_conf.pin_bit_mask = (1ULL << int1Pin) | (1ULL << int2Pin);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
@@ -149,16 +149,27 @@ void Qmi8658C::taskEntry(void *param)
     // Signal running
     xEventGroupSetBits(self->eventGroup, IS_RUNNING);
 
-    Qmi8658C::DataPoint point{};
+    DataPoint data{};
 
     while (true) {
-        EventBits_t bits = xEventGroupWaitBits(self->eventGroup, DO_STOP | DATA_IS_AVAILABLE, pdTRUE, pdFALSE, portMAX_DELAY);
-        if ((bits & DO_STOP) == DO_STOP) {
+        // Wait for interrupt or stop signal
+        EventBits_t bits = xEventGroupWaitBits(self->eventGroup, DATA_IS_AVAILABLE | DO_STOP, pdTRUE, pdFALSE, portMAX_DELAY);
+        if (bits & DO_STOP) {
             break;
         }
-        if ((bits & DATA_IS_AVAILABLE) == DATA_IS_AVAILABLE) {
-            if (self->onSample(point) == ESP_OK) {
-                self->dataService.notify(QueueKey::DataReady, point);
+
+        if (bits & DATA_IS_AVAILABLE) {
+            // Read interrupt status to clear it
+            uint8_t status = 0;
+            self->readReg(QMI8658_REG_STATUS_INT, &status);
+
+            // Fetch sensor data
+            if (self->onSample(data) == ESP_OK) {
+                // Notify via data service
+                self->dataService.notify(QueueKey::DataReady, data);
+                ESP_LOGI(TAG, "Sensor data processed");
+            } else {
+                ESP_LOGE(TAG, "Failed to process sensor data");
             }
         }
     }
@@ -176,52 +187,69 @@ esp_err_t Qmi8658C::disableAllSensors() const
                     0x00); // Disable both accelerometer and gyroscope
 }
 
-// Configure the sensor settings
+// Sensor interrupt and initialization configuration
 esp_err_t Qmi8658C::configure() const
 {
-    esp_err_t err = disableAllSensors();
-    if (err != ESP_OK)
+    esp_err_t err = disableAllSensors(); // Disable sensors before configuration
+    if (err != ESP_OK) {
         return err;
+    }
 
-    // Configure accelerometer
-    constexpr uint8_t accelConfig = 0b00000111; // ±2g, 58.75kHz
+    // Configure accelerometer: ±2G range, 58.75Hz ODR
+    constexpr uint8_t accelConfig = 0b00000111;
     err = writeReg(QMI8658_REG_CTRL2, accelConfig);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure accelerometer: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "CTRL2 (Accelerometer): 0x%02X", accelConfig);
 
-    // Configure gyroscope
-    constexpr uint8_t gyroConfig = 0b00110111; // ±128dps, 29.375Hz
+    // Configure gyroscope: ±128DPS range, 29.375Hz ODR
+    constexpr uint8_t gyroConfig = 0b00110111;
     err = writeReg(QMI8658_REG_CTRL3, gyroConfig);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure gyroscope: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "CTRL3 (Gyroscope): 0x%02X", gyroConfig);
 
-    // Enable both accelerometer and gyroscope
-    constexpr uint8_t ctrl7 = QMI8658_ACCEL_EN_MASK | QMI8658_GYRO_EN_MASK;
-    err = writeReg(QMI8658_REG_CTRL7, ctrl7);
+    // Enable accelerometer and gyroscope
+    constexpr uint8_t ctrl7Reg = QMI8658_ACCEL_EN_MASK | QMI8658_GYRO_EN_MASK;
+    err = writeReg(QMI8658_REG_CTRL7, ctrl7Reg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enable sensors: %s", esp_err_to_name(err));
-    }
-
-    // Route data-ready to BOTH INT1 and INT2, active-low, push-pull (requires pull-ups enabled on MCU)
-    // 0x40: INT active level/drive config (active-low/push-pull per datasheet)
-    // 0x02: Map DRDY to INT1; 0x08: Map DRDY to INT2 (both enabled to be robust to wiring)
-    constexpr uint8_t ctrl8 = 0x40 | 0x02 | 0x08;
-    err = writeReg(QMI8658_REG_CTRL8, ctrl8);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure CTRL8 (interrupt routing): %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to enable accelerometer/gyroscope sensors: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "CTRL7 (Sensor Enable): 0x%02X", ctrl7Reg);
 
-    // Read back STATUS_INT for diagnostics right after enabling interrupts
-    uint8_t status_int = 0;
-    if (readReg(QMI8658_REG_STATUS_INT, &status_int) == ESP_OK) {
-        ESP_LOGI(TAG, "STATUS_INT after INT setup: 0x%02X", status_int);
+    // Route DRDY interrupt to INT1 and INT2 as active-low, push-pull
+    // 0x48: Active-low, push-pull configuration
+    // 0x02: Data-ready routed to INT1
+    // 0x08: Data-ready routed to INT2
+    constexpr uint8_t interruptConfig = 0b01001010;
+    err = writeReg(QMI8658_REG_CTRL8, interruptConfig);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure interrupts: %s", esp_err_to_name(err));
+        return err;
     }
-    return err;
+    ESP_LOGI(TAG, "CTRL8 (Interrupts): 0x%02X", interruptConfig);
+
+    // Optionally, verify STATUS_INT after enabling interrupts
+    uint8_t statusInt = 0;
+    if (readReg(QMI8658_REG_STATUS_INT, &statusInt) == ESP_OK) {
+        ESP_LOGI(TAG, "STATUS_INT after enabling interrupts: 0x%02X", statusInt);
+    } else {
+        ESP_LOGW(TAG, "Failed to read STATUS_INT after enabling interrupts");
+    }
+    uint8_t ctrl1, ctrl2, ctrl3, ctrl7, ctrl8;
+    readReg(QMI8658_REG_CTRL1, &ctrl1);
+    readReg(QMI8658_REG_CTRL2, &ctrl2);
+    readReg(QMI8658_REG_CTRL3, &ctrl3);
+    readReg(QMI8658_REG_CTRL7, &ctrl7);
+    readReg(QMI8658_REG_CTRL8, &ctrl8);
+
+    ESP_LOGI(TAG, "CTRL1: 0x%02X, CTRL2: 0x%02X, CTRL3: 0x%02X, CTRL7: 0x%02X, CTRL8: 0x%02X", ctrl1, ctrl2, ctrl3, ctrl7, ctrl8);
+    return ESP_OK;
 }
 
 // Cleanup sensor on termination
@@ -311,8 +339,10 @@ void Qmi8658C::populateOrientation(DataPoint &point, const float &deltaTime)
     lastOrientation.z += point.gyroscope.z * deltaTime; // Yaw (Z-axis)
 
     // Calculate pitch and roll from accelerometer (for tilt correction)
-    const float accelPitch = std::atan2(point.accelerometer.x, std::sqrt(point.accelerometer.y * point.accelerometer.y + point.accelerometer.z * point.accelerometer.z));
-    const float accelRoll = std::atan2(point.accelerometer.y, std::sqrt(point.accelerometer.x * point.accelerometer.x + point.accelerometer.z * point.accelerometer.z));
+    const float accelPitch
+        = std::atan2(point.accelerometer.x, std::sqrt(point.accelerometer.y * point.accelerometer.y + point.accelerometer.z * point.accelerometer.z));
+    const float accelRoll
+        = std::atan2(point.accelerometer.y, std::sqrt(point.accelerometer.x * point.accelerometer.x + point.accelerometer.z * point.accelerometer.z));
 
     // Use complementary filter to fuse gyro and accelerometer for roll and pitch
     lastOrientation.x = ALPHA * lastOrientation.x + (1 - ALPHA) * (accelRoll * 180.0f / M_PI);
