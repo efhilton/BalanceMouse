@@ -138,7 +138,7 @@ template<typename KeyT, typename DataT, typename UserT>
 void MouseEventDetector::onSensorDataIsReady(const KeyT &key, const DataT &data, const UserT &userData)
 {
     // Static processing context and chain
-    assert(key == Qmi8658C::QueueKey::DataReady);
+    assert(key == Qmi8658C::QueueKey::DATA_READY);
     auto mouse = std::any_cast<std::shared_ptr<Mouse>>(userData);
     static ChainOfResponsibility<DataT, std::shared_ptr<Mouse>> chain{};
     static bool initialized = false;

@@ -1,11 +1,10 @@
 idf_component_register(
         SRCS
-        "src/WebServer.cpp"
         "src/I2cManager.cpp"
         "src/Main.cpp"
         "src/MouseEventDetector.cpp"
         "src/Qmi8658C.cpp"
-        "../components/utilities/src/StringUtilities.cpp"
+        "src/LedController.cpp"
 
         INCLUDE_DIRS
         "."
