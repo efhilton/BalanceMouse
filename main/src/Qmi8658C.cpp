@@ -6,7 +6,6 @@
 #include <driver/i2c_master.h>
 
 namespace Hilton {
-
     // Constructor
     Qmi8658C::Qmi8658C(i2c_master_bus_handle_t busHandle)
         : busHandle(busHandle) {
@@ -158,8 +157,11 @@ namespace Hilton {
 
         while (true) {
             // Wait for an interrupt or stop signal
-            EventBits_t bits = xEventGroupWaitBits(self->eventGroup, DATA_IS_AVAILABLE | DO_STOP, pdTRUE, pdFALSE,
-                                                   portMAX_DELAY);
+            const EventBits_t bits = xEventGroupWaitBits(self->eventGroup,
+                                                         DATA_IS_AVAILABLE | DO_STOP,
+                                                         pdTRUE,
+                                                         pdFALSE,
+                                                         portMAX_DELAY);
             if (bits & DO_STOP) {
                 break;
             }
