@@ -10,7 +10,7 @@
 #include <mutex>
 
 namespace Hilton {
-    template<typename DataDt, typename UserDt = void*>
+    template<typename DataDt, typename UserDt = void *>
     class SimpleNotificationService {
     public:
         explicit SimpleNotificationService(const size_t maxCallbacks = 10)
@@ -44,15 +44,14 @@ namespace Hilton {
         }
 
         void notify(const DataDt &data) {
-            std::vector<SimpleCallbackInfo<DataDt, UserDt>> callbacksCopy;
-            {
+            std::vector<SimpleCallbackInfo<DataDt, UserDt> > callbacksCopy; {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (callbacks.empty()) {
                     return;
                 }
                 callbacksCopy = callbacks; // Copy callbacks to execute without lock
             }
-            
+
             for (const auto &[id, callback, userdata]: callbacksCopy) {
                 try {
                     callback(data, userdata);
@@ -77,7 +76,7 @@ namespace Hilton {
         bool hasCallback(uint32_t id) const {
             std::lock_guard<std::mutex> lock(mutex_);
             return std::any_of(callbacks.begin(), callbacks.end(),
-                [id](const auto& info) { return info.id == id; });
+                               [id](const auto &info) { return info.id == id; });
         }
 
     private:
