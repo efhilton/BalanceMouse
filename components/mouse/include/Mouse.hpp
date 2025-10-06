@@ -51,6 +51,8 @@ public:
     bool isButtonIdle(const MouseButtonStateMachine::Button &queryButton);
     bool isButtonReleased(const MouseButtonStateMachine::Button &queryButton);
 
+    void printStatus() const;
+
 private:
     MouseButtonStateMachine leftButton;
     MouseButtonStateMachine rightButton;

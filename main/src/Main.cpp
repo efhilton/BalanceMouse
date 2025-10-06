@@ -31,14 +31,14 @@ using BalanceBoardConfig = struct {
     gpio_num_t led_control_pin;
 };
 
-static OnSimpleCallback<std::shared_ptr<Hilton::Mouse> > onMouseData =
-        [](const std::shared_ptr<Hilton::Mouse> &mouse, const void * /* ignored */) {
-    ESP_LOGI(TAG, "Mouse data received");
+static OnSimpleCallback<Hilton::Mouse *> onMouseData =
+        [](const Hilton::Mouse *mouse, const void * /*ignored*/) {
+    mouse->printStatus();
 };
 
-static OnSimpleCallback<std::shared_ptr<Hilton::Mouse> > controlLights = [
-        ](const std::shared_ptr<Hilton::Mouse> &mouse, const void *ledcontrollerptr) {
-    ESP_LOGI(TAG, "Light Control data received");
+static OnSimpleCallback<Hilton::Mouse *> controlLights = [
+        ](const Hilton::Mouse *mouse, const void *ledcontrollerptr) {
+    auto ledController = static_cast<const Hilton::LedController *>(ledcontrollerptr);
 };
 
 
@@ -78,23 +78,21 @@ extern "C" void app_main(void) {
     // Register MouseEventDetector callback with sensor's notification service
     auto onSensorData = [mouseEventDetector](const Hilton::Qmi8658C::DataPoint &data, const void *mousePtr) {
         if (mousePtr != nullptr) {
-            if (auto activeMouse = static_cast<const std::shared_ptr<Hilton::Mouse> *>(mousePtr);
-                *activeMouse) {
-                mouseEventDetector->onSensorDataIsReady(data, *activeMouse);
-            } else {
-                ESP_LOGW(TAG, "Invalid mouse pointer conversion");
-            }
+            auto activeMouse = static_cast<Hilton::Mouse const *>(mousePtr);
+            mouseEventDetector->onSensorDataIsReady(data, const_cast<Hilton::Mouse *>(activeMouse));
         } else {
             ESP_LOGW(TAG, "Mouse pointer is null, skipping callback");
         }
     };
 
-    // Pass pointer to the shared_ptr as userData
-    uint32_t id = qmi8658C->dataService.addCallback(onSensorData, &mouse);
+    const uint32_t id = qmi8658C->dataService.addCallback(onSensorData, mouse.get());
     ESP_LOGI(TAG, "Registered QMI8658 callback with id %u", id);
 
-    // uint32_t id2 = mouseEventDetector->simpleNotificationService.addCallback(onMouseData, nullptr);
-    // ESP_LOGI(TAG, "Registered mouseEventDetector callback with id %u", id2);
+    const uint32_t id2 = mouseEventDetector->simpleNotificationService.addCallback(onMouseData, nullptr);
+    ESP_LOGI(TAG, "Registered mouseEventDetector callback with id %u", id2);
+
+    const uint32_t id3 = mouseEventDetector->simpleNotificationService.addCallback(controlLights, ledController.get());
+    ESP_LOGI(TAG, "Registered mouseEventDetector callback for light control with id %u", id3);
 
     // Main task can do other things or just wait
     while (true) {

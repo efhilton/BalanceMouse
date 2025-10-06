@@ -7,9 +7,47 @@
 #include <functional>
 #include <NotificationCallback.hpp>
 #include <vector>
-#include <mutex>
+
+// FreeRTOS-friendly mutex implementation
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace Hilton {
+    class FreeRTOSMutex {
+    public:
+        FreeRTOSMutex() {
+            handle_ = xSemaphoreCreateMutex();
+            configASSERT(handle_ != nullptr);
+        }
+        ~FreeRTOSMutex() {
+            if (handle_ != nullptr) {
+                vSemaphoreDelete(handle_);
+            }
+        }
+        void lock() const {
+            // Block indefinitely until the mutex is acquired
+            xSemaphoreTake(handle_, portMAX_DELAY);
+        }
+        void unlock() const {
+            xSemaphoreGive(handle_);
+        }
+
+        // Non-copyable
+        FreeRTOSMutex(const FreeRTOSMutex&) = delete;
+        FreeRTOSMutex& operator=(const FreeRTOSMutex&) = delete;
+
+    private:
+        SemaphoreHandle_t handle_{};
+    };
+
+    class ScopedLock {
+    public:
+        explicit ScopedLock(const FreeRTOSMutex &m) : m_(m) { m_.lock(); }
+        ~ScopedLock() { m_.unlock(); }
+    private:
+        const FreeRTOSMutex &m_;
+    };
+
     template<typename DataDt, typename UserDt = void *>
     class SimpleNotificationService {
     public:
@@ -19,7 +57,7 @@ namespace Hilton {
         }
 
         uint32_t addCallback(const OnSimpleCallback<DataDt, UserDt> &callback, const UserDt &userData) {
-            std::lock_guard<std::mutex> lock(mutex_);
+            ScopedLock lock(mutex_);
             if (callbacks.size() >= maxCallbacks_) {
                 ESP_LOGW(TAG, "Maximum callback limit reached (%zu)", maxCallbacks_);
                 return 0; // Invalid ID
@@ -32,7 +70,7 @@ namespace Hilton {
         }
 
         bool eraseCallback(uint32_t id) {
-            std::lock_guard<std::mutex> lock(mutex_);
+            ScopedLock lock(mutex_);
             auto originalSize = callbacks.size();
             callbacks.erase(
                 std::remove_if(
@@ -45,14 +83,17 @@ namespace Hilton {
 
         void notify(const DataDt &data) {
             std::vector<SimpleCallbackInfo<DataDt, UserDt> > callbacksCopy; {
-                std::lock_guard<std::mutex> lock(mutex_);
+                ScopedLock lock(mutex_);
                 if (callbacks.empty()) {
                     return;
                 }
                 callbacksCopy = callbacks; // Copy callbacks to execute without lock
             }
 
-            for (const auto &[id, callback, userdata]: callbacksCopy) {
+            for (const auto &info : callbacksCopy) {
+                const auto &id = info.id;
+                const auto &callback = info.callback;
+                const auto &userdata = info.userData;
                 try {
                     callback(data, userdata);
                 } catch (const std::exception &e) {
@@ -64,17 +105,17 @@ namespace Hilton {
         }
 
         void clear() {
-            std::lock_guard<std::mutex> lock(mutex_);
+            ScopedLock lock(mutex_);
             callbacks.clear();
         }
 
         size_t getCallbackCount() const {
-            std::lock_guard<std::mutex> lock(mutex_);
+            ScopedLock lock(mutex_);
             return callbacks.size();
         }
 
         bool hasCallback(uint32_t id) const {
-            std::lock_guard<std::mutex> lock(mutex_);
+            ScopedLock lock(mutex_);
             return std::any_of(callbacks.begin(), callbacks.end(),
                                [id](const auto &info) { return info.id == id; });
         }
@@ -83,6 +124,6 @@ namespace Hilton {
         size_t maxCallbacks_;
         static constexpr auto TAG{"SIMPLE_NOTIFICATION_SERVICE"};
         std::vector<SimpleCallbackInfo<DataDt, UserDt> > callbacks{};
-        mutable std::mutex mutex_;
+        mutable FreeRTOSMutex mutex_;
     };
 } // namespace Hilton

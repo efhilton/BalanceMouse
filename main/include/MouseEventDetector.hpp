@@ -10,12 +10,12 @@ namespace Hilton {
     public:
         ~MouseEventDetector();
 
-        void onSensorDataIsReady(const Qmi8658C::DataPoint &data, std::shared_ptr<Mouse> mouse);
+        void onSensorDataIsReady(const Qmi8658C::DataPoint &data, Mouse *mouse);
 
         MouseEventDetector();
 
         // our callback service for when we detect activity.
-        SimpleNotificationService<std::shared_ptr<Mouse> > simpleNotificationService;
+        SimpleNotificationService<Mouse *> simpleNotificationService;
 
         static constexpr auto TAG{"MOUSE_EVENT_DETECTOR"};
     };

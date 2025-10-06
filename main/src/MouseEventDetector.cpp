@@ -10,7 +10,7 @@ namespace Hilton {
     MouseEventDetector::~MouseEventDetector() = default;
 
     template<typename DataT, typename UserDt>
-    static bool handleScrollWheel(const DataT &d, const std::shared_ptr<Mouse> &m) {
+    static bool handleScrollWheel(const DataT &d, Mouse *m) {
         constexpr auto Z_START_THRESHOLD{10.0f};
         constexpr auto Z_STOP_THRESHOLD{8.0f};
         const float absOrientZ = std::abs(d.orientation.z);
@@ -39,7 +39,7 @@ namespace Hilton {
     }
 
     template<typename DataT, typename UserT>
-    static bool handleButtonClick(const DataT &d, const std::shared_ptr<Mouse> &m) {
+    static bool handleButtonClick(const DataT &d, Mouse *m) {
         using MouseButtonStateMachine::Button::Left;
         using MouseButtonStateMachine::Button::Middle;
         using MouseButtonStateMachine::Button::Right;
@@ -90,7 +90,7 @@ namespace Hilton {
     }
 
     template<typename DataT, typename UserT>
-    static bool handleMouseMovement(const DataT &d, const std::shared_ptr<Mouse> &m) {
+    static bool handleMouseMovement(const DataT &d, Mouse *m) {
         constexpr auto X_MOUSE_THRESHOLD{2.0f};
         constexpr auto X_MOUSE_SCALE{7.0f};
         constexpr auto Y_MOUSE_THRESHOLD{2.0f};
@@ -114,14 +114,14 @@ namespace Hilton {
     }
 
     template<typename DataT, typename UserT>
-    static bool handleCatchAll(const DataT &d, const std::shared_ptr<Mouse> &m) {
+    static bool handleCatchAll(const DataT &d, Mouse *m) {
         m->updateMovement(0, 0);
         return false;
     }
 
     // Optional raw printer handler (can be disabled to save time)
     template<typename DataT, typename UserT>
-    static bool handlePrintRaw(const DataT &d, const std::shared_ptr<Mouse> & /*ignored*/) {
+    static bool handlePrintRaw(const DataT &d, Mouse * /*ignored*/) {
         printf(
             "Accel (%6.2f %6.2f %6.2f), Gyro (%6.2f, %6.2f, %6.2f)\n",
             d.accelerometer.x,
@@ -130,20 +130,20 @@ namespace Hilton {
             d.gyroscope.x,
             d.gyroscope.y,
             d.gyroscope.z);
-        return true;
+        return false;
     }
 
     // Template definition moved from the header; explicit instantiation provided below
-    void MouseEventDetector::onSensorDataIsReady(const Qmi8658C::DataPoint &data, const std::shared_ptr<Mouse> mouse) {
-        static ChainOfResponsibility<Qmi8658C::DataPoint, std::shared_ptr<Mouse> > chain{};
+    void MouseEventDetector::onSensorDataIsReady(const Qmi8658C::DataPoint &data, Mouse *mouse) {
+        static ChainOfResponsibility<Qmi8658C::DataPoint, Mouse *> chain{};
         static bool initialized = false;
         if (!initialized) {
             // Register handlers (enable what you need)
-            chain.addHandler(handleScrollWheel<Qmi8658C::DataPoint, std::shared_ptr<Mouse> >);
-            chain.addHandler(handleButtonClick<Qmi8658C::DataPoint, std::shared_ptr<Mouse> >);
-            chain.addHandler(handleMouseMovement<Qmi8658C::DataPoint, std::shared_ptr<Mouse> >);
-            chain.addHandler(handleCatchAll<Qmi8658C::DataPoint, std::shared_ptr<Mouse> >);
-            chain.addHandler(handlePrintRaw<Qmi8658C::DataPoint, std::shared_ptr<Mouse> >);
+            // chain.addHandler(handleScrollWheel<Qmi8658C::DataPoint, Mouse *>);
+            // chain.addHandler(handleButtonClick<Qmi8658C::DataPoint, Mouse *>);
+            // chain.addHandler(handleMouseMovement<Qmi8658C::DataPoint, Mouse *>);
+            // chain.addHandler(handleCatchAll<Qmi8658C::DataPoint, Mouse *>);
+            chain.addHandler(handlePrintRaw<Qmi8658C::DataPoint, Mouse *>);
             initialized = true;
         }
 
