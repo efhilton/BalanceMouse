@@ -63,7 +63,7 @@ namespace Hilton {
         struct DataPoint {
             Point rawAccel; // Linear acceleration, from sensor.
             Point rawGyro; // Angular speed, from sensor.
-            Point acceleration; // Angular acceleration, calculated.
+            Point angularAccel; // Angular acceleration, calculated.
             Point orientation; // Orientation (angle), calculated
             Point tilt; // Tilt (angle), calculated
         };

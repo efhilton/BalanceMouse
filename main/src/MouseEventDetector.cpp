@@ -3,132 +3,122 @@
 #include <cmath>
 #include <memory>
 #include <Qmi8658C.hpp>
+#include <lwip/prot/ip6.h>
 
 namespace Hilton {
     MouseEventDetector::MouseEventDetector() = default;
 
     MouseEventDetector::~MouseEventDetector() = default;
 
-    template<typename DataT, typename UserDt>
-    static bool handleScrollWheel(const DataT &d, Mouse *m) {
-        constexpr auto Z_START_THRESHOLD{10.0f};
-        constexpr auto Z_STOP_THRESHOLD{8.0f};
-        const float absOrientZ = std::abs(d.orientation.z);
-        const bool isScrollWheelActive = m->isScrollWheelActive();
-
-        const float clampedAngle = std::clamp(d.orientation.z, -90.0f, 90.0f);
-        const float scaledWheel = (127.0f / 90.0f) * clampedAngle;
-        const Mouse::ScrollWheelDt wheelValue = static_cast<Mouse::ScrollWheelDt>(std::round(
-            std::clamp(scaledWheel, -127.0f, 127.0f)));
-
-        // Implement a hysteresis
-        if ((!isScrollWheelActive && absOrientZ > Z_START_THRESHOLD) // trigger on
-            || (isScrollWheelActive && absOrientZ > Z_STOP_THRESHOLD && absOrientZ < Z_START_THRESHOLD)) {
-            // sustain in on position
-            m->setScrollWheel(wheelValue);
-            m->updateMovement(0, 0);
-            // nothing more to be done.
-            return true;
+    static bool handleScrollWheel(const Qmi8658C::DataPoint &d, Mouse *m) {
+        if (m->isButtonPressed(MouseButtonStateMachine::Button::Left)
+            || m->isButtonPressed(MouseButtonStateMachine::Button::Right)
+            || m->isButtonPressed(MouseButtonStateMachine::Button::Middle)
+            || m->isButtonPressed(MouseButtonStateMachine::Button::Wheel)) {
+            return false;
         }
 
-        // No more scrolling.
-        m->setScrollWheel(0);
+        // Use ORIENTATION Z (yaw) for scroll wheel
+        constexpr auto MAX_SCROLL_ANGLE{60.0f};
+        constexpr auto SCROLL_SCALE{127.0f / MAX_SCROLL_ANGLE};
+        m->setAngle(static_cast<Mouse::ScrollWheelDt>(SCROLL_SCALE * d.orientation.z));
 
-        // Signal that more processing is needed.
+        if (m->isScrollWheelActive()) {
+            m->updateMovement(0, 0); // Stop cursor movement during scroll
+            return true; // signal that we are done proessing.
+        }
+
+        m->setAngle(0);
         return false;
     }
 
-    template<typename DataT, typename UserT>
-    static bool handleButtonClick(const DataT &d, Mouse *m) {
+    static bool handleButtonClick(const Qmi8658C::DataPoint &d, Mouse *m) {
         using MouseButtonStateMachine::Button::Left;
-        using MouseButtonStateMachine::Button::Middle;
         using MouseButtonStateMachine::Button::Right;
+        using MouseButtonStateMachine::Button::Middle;
         using MouseButtonStateMachine::Event::MouseDown;
         using MouseButtonStateMachine::Event::MouseUp;
 
-        constexpr auto X_PRESSED_THRESHOLD{10.0f};
-        constexpr auto X_RELEASED_THRESHOLD(2.0f);
-        constexpr auto X_DOT_THRESHOLD{55.0f};
-        constexpr auto Y_PRESSED_THRESHOLD{10.0f};
-        constexpr auto Y_RELEASED_THRESHOLD{2.0f};
-        constexpr auto Y_DOT_THRESHOLD{55.0f};
+        // Use angular speed (gyro) for button detection
+        constexpr auto GYRO_PRESS_THRESHOLD{100.0f}; // Angular speed to trigger press
+        constexpr auto LAST_RELEASE_THRESHOLD{pdMS_TO_TICKS(200)}; // Time to wait before releasing button
+        static TickType_t lastMouseRelease = 0;
 
-        const bool isLeftButtonPressed = m->isButtonPressed(Left);
-        const bool isMiddleButtonPressed = m->isButtonPressed(Middle);
-        const bool isRightButtonPressed = m->isButtonPressed(Right);
-        const bool isLeftButtonIdle = m->isButtonIdle(Left);
-        const bool isMiddleButtonIdle = m->isButtonIdle(Middle);
-        const bool isRightButtonIdle = m->isButtonIdle(Right);
-        const bool isXButtonActionSpeed = std::abs(d.rawGyro.x) > X_DOT_THRESHOLD;
-        const bool isYButtonActionSpeed = std::abs(d.rawGyro.y) > Y_DOT_THRESHOLD;
-        const float deltaX = d.tilt.x - m->getMovement().deltaX;
-        const float deltaY = d.tilt.y - m->getMovement().deltaY;
+        const float gyroX = d.rawGyro.x; // Roll angular speed
+        const float gyroY = d.rawGyro.y; // Pitch angular speed
+        const bool isLeftRightClick = std::abs(gyroX) > GYRO_PRESS_THRESHOLD;
+        const bool isVerticalClick = std::abs(gyroY) > GYRO_PRESS_THRESHOLD;
 
-        if (isXButtonActionSpeed || isYButtonActionSpeed) {
-            // the tilt toward the X or the Y imply that a button PRESS or RELEASE is coming.
-            if (isXButtonActionSpeed && isLeftButtonPressed && deltaX > -X_RELEASED_THRESHOLD) {
-                m->getButton(Left).handleEvent(MouseUp);
-            } else if (isXButtonActionSpeed && isRightButtonPressed && deltaX < X_RELEASED_THRESHOLD) {
-                m->getButton(Right).handleEvent(MouseUp);
-            } else if (isYButtonActionSpeed && isMiddleButtonPressed && deltaY > -Y_RELEASED_THRESHOLD) {
-                m->getButton(Middle).handleEvent(MouseUp);
-            } else if (isLeftButtonIdle && isRightButtonIdle && isMiddleButtonIdle) {
-                if (isXButtonActionSpeed && deltaX > X_PRESSED_THRESHOLD) {
-                    m->getButton(Right).handleEvent(MouseDown);
-                } else if (isXButtonActionSpeed && deltaX < -X_PRESSED_THRESHOLD) {
-                    m->getButton(Left).handleEvent(MouseDown);
-                } else if (isYButtonActionSpeed && deltaY < -Y_PRESSED_THRESHOLD) {
-                    m->getButton(Middle).handleEvent(MouseDown);
-                }
-            }
-            m->updateMovement(0, 0);
+        // LEFT BUTTON (Negative X angular speed)
+        if (isLeftRightClick && gyroX < 0
+            && m->isButtonIdle(Left)
+            && m->isButtonIdle(Right)
+            && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
+            m->getButton(Left).handleEvent(MouseDown);
+            return true;
+        }
+        if (isLeftRightClick && gyroX > 0
+            && m->isButtonPressed(Left)) {
+            m->getButton(Left).handleEvent(MouseUp);
+            lastMouseRelease = xTaskGetTickCount();
             return true;
         }
 
-        // Signal that more processing is needed.
-        return false;
-    }
-
-    template<typename DataT, typename UserT>
-    static bool handleMouseMovement(const DataT &d, Mouse *m) {
-        constexpr auto X_MOUSE_THRESHOLD{2.0f};
-        constexpr auto X_MOUSE_SCALE{7.0f};
-        constexpr auto Y_MOUSE_THRESHOLD{2.0f};
-        constexpr auto Y_MOUSE_SCALE{-8.0f};
-
-        const float deltaX = d.tilt.x - m->getMovement().deltaX;
-        const float deltaY = d.tilt.y - m->getMovement().deltaY;
-
-        if (std::abs(deltaX) > X_MOUSE_THRESHOLD || std::abs(deltaY) > Y_MOUSE_THRESHOLD) {
-            // the tilt is slow, meaning no button presses are about to happen. Capture the mouse movement instead.
-            const Mouse::MovementDt x = static_cast<Mouse::MovementDt>(std::round(
-                std::clamp(X_MOUSE_SCALE * deltaX, -127.0f, 127.0f)));
-            const Mouse::MovementDt y = static_cast<Mouse::MovementDt>(std::round(
-                std::clamp(Y_MOUSE_SCALE * deltaY, -127.0f, 127.0f)));
-            m->updateMovement(x, y);
+        // RIGHT BUTTON (Positive X angular speed)
+        if (isLeftRightClick && gyroX > 0
+            && m->isButtonIdle(Right)
+            && m->isButtonIdle(Left)
+            && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
+            m->getButton(Right).handleEvent(MouseDown);
+            return true;
+        }
+        if (isLeftRightClick && gyroX < 0
+            && m->isButtonPressed(Right)) {
+            m->getButton(Right).handleEvent(MouseUp);
+            lastMouseRelease = xTaskGetTickCount();
             return true;
         }
 
-        // Signal that more processing is needed.
+        // MIDDLE BUTTON (Negative Y angular speed)
+        if (isVerticalClick && gyroY < 0
+            && m->isButtonIdle(Middle)
+            && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
+            m->getButton(Middle).handleEvent(MouseDown);
+            return true;
+        }
+        if (isVerticalClick && gyroY > 0
+            && m->isButtonPressed(Middle)) {
+            m->getButton(Middle).handleEvent(MouseUp);
+            lastMouseRelease = xTaskGetTickCount();
+            return true;
+        }
+
         return false;
     }
 
-    template<typename DataT, typename UserT>
-    static bool handleCatchAll(const DataT &d, Mouse *m) {
-        m->updateMovement(0, 0);
-        return true;
+    static bool handleMouseMovement(const Qmi8658C::DataPoint &d, Mouse *m) {
+        // Use Gravity for mouse movement (rotation rates)
+        constexpr auto GRAVITY_SCALE{127.0f / 9.8f}; // Sensitivity scaling
+
+        const float rotationX = d.rawAccel.x; // Roll rate
+        const float rotationY = d.rawAccel.y; // Pitch rate
+
+        m->updateMovement(static_cast<Mouse::MovementDt>(GRAVITY_SCALE * rotationX),
+                          static_cast<Mouse::MovementDt>(GRAVITY_SCALE * rotationY));
+
+        return m->isMoving();
     }
 
     // Template definition moved from the header; explicit instantiation provided below
     void MouseEventDetector::onSensorDataIsReady(const Qmi8658C::DataPoint &data, Mouse *mouse) {
         static ChainOfResponsibility<Qmi8658C::DataPoint, Mouse *> chain{};
         static bool initialized = false;
+
         if (!initialized) {
-            // Register handlers (enable what you need)
-            chain.addHandler(handleScrollWheel<Qmi8658C::DataPoint, Mouse *>);
-            chain.addHandler(handleButtonClick<Qmi8658C::DataPoint, Mouse *>);
-            chain.addHandler(handleMouseMovement<Qmi8658C::DataPoint, Mouse *>);
-            chain.addHandler(handleCatchAll<Qmi8658C::DataPoint, Mouse *>);
+            // Order matters! Button detection has highest priority
+            chain.addHandler(handleScrollWheel);
+            chain.addHandler(handleButtonClick);
+            chain.addHandler(handleMouseMovement);
             initialized = true;
         }
 

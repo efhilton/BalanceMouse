@@ -60,15 +60,37 @@ namespace Hilton {
 
     // Initialize the sensor
     esp_err_t Qmi8658C::initialize() {
-        // Initialize Kalman filters
-        kalmanAccelerationX.initialize(1e-3, 1e-2);
-        kalmanAccelerationY.initialize(1e-3, 1e-2);
-        kalmanAccelerationZ.initialize(1e-3, 1e-2);
-        kalmanTiltRoll.initialize(1e-3, 1e-2);
-        kalmanTiltPitch.initialize(1e-3, 1e-2);
-        kalmanOrientationX.initialize(1e-3, 1e-2);
-        kalmanOrientationY.initialize(1e-3, 1e-2);
-        kalmanOrientationZ.initialize(1e-3, 1e-2);
+        // Initialize Kalman filters with sensor-specific parameters
+
+        // ANGULAR ACCELERATION FILTERS (gyro derivative)
+        // - High process noise (gyro derivatives are naturally noisy)
+        // - Lower measurement noise (we trust the calculation)
+        constexpr float angAccel_Q = 5e-2f; // Process noise (higher for derivatives)
+        constexpr float angAccel_R = 1e-3f; // Measurement noise (trust our calculation)
+        kalmanAccelerationX.initialize(angAccel_Q, angAccel_R);
+        kalmanAccelerationY.initialize(angAccel_Q, angAccel_R);
+        kalmanAccelerationZ.initialize(angAccel_Q, angAccel_R);
+
+        // TILT FILTERS (accelerometer-based angles)
+        // - Lower process noise (tilt changes slowly when not moving)
+        // - Higher measurement noise (accelerometer has noise + vibration)
+        constexpr float tilt_Q = 1e-4f; // Process noise (tilt changes slowly)
+        constexpr float tilt_R = 5e-2f; // Measurement noise (accel is noisy)
+        kalmanTiltRoll.initialize(tilt_Q, tilt_R);
+        kalmanTiltPitch.initialize(tilt_Q, tilt_R);
+
+        // ORIENTATION FILTERS (sensor fusion)
+        // - Medium process noise (orientation can change at medium rates)
+        // - Medium measurement noise (fusion of gyro + accel)
+        constexpr float orient_Q = 1e-3f; // Process noise
+        constexpr float orient_R = 1e-2f; // Measurement noise
+        kalmanOrientationX.initialize(orient_Q, orient_R);
+        kalmanOrientationY.initialize(orient_Q, orient_R);
+
+        // YAW has different characteristics (gyro-only, drifts over time)
+        constexpr float yaw_Q = 2e-3f; // Higher process noise (drift)
+        constexpr float yaw_R = 5e-3f; // Lower measurement noise (trust gyro short-term)
+        kalmanOrientationZ.initialize(yaw_Q, yaw_R);
 
         // Initialize state variables
         lastGyro = {0, 0, 0};
@@ -289,53 +311,92 @@ namespace Hilton {
 
     void Qmi8658C::populateAcceleration(DataPoint &point, const float &deltaTime) {
         // Calculate angular acceleration as the rate of change of angular velocity
-        point.acceleration.x = kalmanAccelerationX.estimate((point.rawGyro.x - lastGyro.x) / deltaTime, 0, deltaTime);
-        point.acceleration.y = kalmanAccelerationY.estimate((point.rawGyro.y - lastGyro.y) / deltaTime, 0, deltaTime);
-        point.acceleration.z = kalmanAccelerationZ.estimate((point.rawGyro.z - lastGyro.z) / deltaTime, 0, deltaTime);
+        point.angularAccel.x = kalmanAccelerationX.estimate((point.rawGyro.x - lastGyro.x) / deltaTime, 0, deltaTime);
+        point.angularAccel.y = kalmanAccelerationY.estimate((point.rawGyro.y - lastGyro.y) / deltaTime, 0, deltaTime);
+        point.angularAccel.z = kalmanAccelerationZ.estimate((point.rawGyro.z - lastGyro.z) / deltaTime, 0, deltaTime);
 
         lastGyro = point.rawGyro;
     }
 
     void Qmi8658C::populateTilt(DataPoint &point, const float &deltaTime) {
+        // TILT: Pure accelerometer-based angle (static orientation)
         constexpr float g = 9.81f;
         const float ax = point.rawAccel.x / g;
         const float ay = point.rawAccel.y / g;
         const float az = point.rawAccel.z / g;
 
-        // Direct tilt calculation from accelerometer
-        const float roll = std::atan2(ay, az);
-        const float pitch = std::atan2(-ax, std::sqrt(ay * ay + az * az));
+        // Calculate tilt angles from accelerometer only
+        const auto roll = std::atan2(ay, az) * 180.0f / M_PI;
+        const auto pitch = std::atan2(-ax, std::sqrt(ay * ay + az * az)) * 180.0f / M_PI;
 
-        // Use Kalman filters to smooth raw tilt values
-        point.tilt.x = kalmanTiltRoll.estimate(roll * 180.0f / M_PI, 0, 0.0f);
-        point.tilt.y = kalmanTiltPitch.estimate(pitch * 180.0f / M_PI, 0, 0.0f);
-        point.tilt.z = 0; // Yaw cannot be determined from accelerometer alone
+        // Apply light filtering to reduce noise
+        point.tilt.x = kalmanTiltRoll.estimate(roll, 0, 0.0f);
+        point.tilt.y = kalmanTiltPitch.estimate(pitch, 0, 0.0f);
+        point.tilt.z = 0; // Cannot determine yaw from accelerometer
     }
 
     void Qmi8658C::populateOrientation(DataPoint &point, const float &deltaTime) {
         constexpr float ALPHA = 0.98f; // Complementary filter weight
+        constexpr float SIGNIFICANT_ROTATION = 2.0f; // °/s threshold for meaningful rotation
+        constexpr float DRIFT_CORRECTION_TIME = 10.0f; // seconds before applying drift correction
+        constexpr float DRIFT_CORRECTION_RATE = 0.0001f; // Very gentle drift correction
 
-        // Integrate gyro data to estimate angular changes
-        lastOrientation.x += point.rawGyro.x * deltaTime; // Roll
-        lastOrientation.y += point.rawGyro.y * deltaTime; // Pitch
-        lastOrientation.z += point.rawGyro.z * deltaTime; // Yaw
+        // Static variables to track yaw state
+        static float timeWithoutRotation = 0.0f;
+        static float lastSignificantYaw = 0.0f;
+        static bool hasSignificantRotation = false;
 
-        // Calculate pitch and roll from accelerometer
-        const float accelPitch = std::atan2(point.rawAccel.x,
-                                            std::sqrt(point.rawAccel.y * point.rawAccel.y +
-                                                      point.rawAccel.z * point.rawAccel.z));
-        const float accelRoll = std::atan2(point.rawAccel.y,
-                                           std::sqrt(point.rawAccel.x * point.rawAccel.x +
-                                                     point.rawAccel.z * point.rawAccel.z));
+        // ROLL AND PITCH: Use complementary filter with accelerometer correction
+        // Integrate gyroscope data
+        lastOrientation.x += point.rawGyro.x * deltaTime;
+        lastOrientation.y += point.rawGyro.y * deltaTime;
 
-        // Use complementary filter to fuse gyro and accelerometer
-        lastOrientation.x = ALPHA * lastOrientation.x + (1 - ALPHA) * (accelRoll * 180.0f / M_PI);
-        lastOrientation.y = ALPHA * lastOrientation.y + (1 - ALPHA) * (accelPitch * 180.0f / M_PI);
+        // Fuse with accelerometer data using complementary filter
+        lastOrientation.x = ALPHA * lastOrientation.x + (1 - ALPHA) * point.tilt.x;
+        lastOrientation.y = ALPHA * lastOrientation.y + (1 - ALPHA) * point.tilt.y;
 
-        // Apply Kalman filters
+        // Apply Kalman filtering for roll and pitch
         point.orientation.x = kalmanOrientationX.estimate(lastOrientation.x, point.rawGyro.x, deltaTime);
         point.orientation.y = kalmanOrientationY.estimate(lastOrientation.y, point.rawGyro.y, deltaTime);
-        point.orientation.z = kalmanOrientationZ.estimate(lastOrientation.z, point.rawGyro.z, deltaTime);
+
+        // YAW: Pure integration with intelligent drift correction
+        // Always integrate gyroscope data to maintain position memory
+        lastOrientation.z += point.rawGyro.z * deltaTime;
+
+        // Track rotation activity
+        if (std::abs(point.rawGyro.z) > SIGNIFICANT_ROTATION) {
+            // Active rotation detected
+            timeWithoutRotation = 0.0f;
+            hasSignificantRotation = true;
+            lastSignificantYaw = lastOrientation.z;
+        } else {
+            // No significant rotation
+            timeWithoutRotation += deltaTime;
+        }
+
+        // Apply gentle drift correction only after long periods of inactivity
+        if (hasSignificantRotation && timeWithoutRotation > DRIFT_CORRECTION_TIME) {
+            // Very gentle drift correction toward last known position
+            const float driftError = lastOrientation.z - lastSignificantYaw;
+            const float correction = driftError * DRIFT_CORRECTION_RATE * deltaTime;
+            lastOrientation.z -= correction;
+
+            // If very close to target, snap to it
+            if (std::abs(driftError) < 0.1f) {
+                lastOrientation.z = lastSignificantYaw;
+            }
+        }
+
+        // For yaw, use direct integration result (no Kalman filter to avoid complexity)
+        point.orientation.z = lastOrientation.z;
+
+        // Debug logging
+        // static int debugCounter = 0;
+        // if (++debugCounter % 50 == 0) {
+        //     // Every 1 second at 50Hz
+        //     ESP_LOGI(TAG, "Gyro Z: %.3f°/s, Yaw: %.1f°, IdleTime: %.1fs, Target: %.1f°",
+        //              point.rawGyro.z, point.orientation.z, timeWithoutRotation, lastSignificantYaw);
+        // }
     }
 
     void Qmi8658C::populateRawAccelerometer(DataPoint &point, const uint8_t *data) {

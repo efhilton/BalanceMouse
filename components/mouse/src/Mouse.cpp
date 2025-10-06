@@ -1,8 +1,9 @@
-#include "Mouse.hpp"
-#include "MouseButtonStateMachine.hpp"
 #include <cmath>
-
 #include <cstdio>
+#include <Mouse.hpp>
+#include <MouseButtonStateMachine.hpp>
+#include <stdexcept>
+#include <string>
 
 namespace Hilton {
     Mouse::Mouse()
@@ -44,8 +45,18 @@ namespace Hilton {
     }
 
     void Mouse::updateMovement(const MovementDt dx, const MovementDt dy) {
-        movement.deltaX = dx;
-        movement.deltaY = dy;
+        movement.deltaX = static_cast<MovementDt>(std::clamp(dx,
+                                                             static_cast<MovementDt>(-127),
+                                                             static_cast<MovementDt>(127)));
+        movement.deltaY = static_cast<MovementDt>(std::clamp(dy,
+                                                             static_cast<MovementDt>(-127),
+                                                             static_cast<MovementDt>(127)));
+        const auto spd = std::sqrt(movement.deltaX * movement.deltaX + movement.deltaY * movement.deltaY);
+        if (!moving && spd > MOVEMENT_THRESHOLD_START) {
+            moving = true;
+        } else if (moving && spd < MOVEMENT_THRESHOLD_STOP) {
+            moving = false;
+        }
     }
 
     Mouse::Movement &Mouse::getMovement() {
@@ -53,31 +64,39 @@ namespace Hilton {
     }
 
     bool Mouse::isMoving() const {
-        return std::sqrt(movement.deltaX * movement.deltaX + movement.deltaY * movement.deltaY)
-               > MOVEMENT_THRESHOLD;
+        return moving;
     }
 
-    void Mouse::setScrollWheel(const ScrollWheelDt value) {
-        scrollWheel = value;
+    void Mouse::setAngle(const ScrollWheelDt value) {
+        swAngle = static_cast<ScrollWheelDt>(std::clamp(static_cast<ScrollWheelDt>(value),
+                                                        static_cast<ScrollWheelDt>(-127),
+                                                        static_cast<ScrollWheelDt>(127)));
+        if (!scrollWheelActive && std::abs(swAngle) > ANGLE_THRESHOLD_START) {
+            // trigger on
+            scrollWheelActive = true;
+        } else if (scrollWheelActive && std::abs(swAngle) < ANGLE_THRESHOLD_STOP) {
+            // trigger off
+            scrollWheelActive = false;
+        }
     }
 
-    Mouse::ScrollWheelDt Mouse::getScrollWheel() const {
-        return scrollWheel;
+    Mouse::ScrollWheelDt Mouse::getAngle() const {
+        return swAngle;
     }
 
     void Mouse::debugState() const {
         printf(
-            "Left: %9s Right: %9s Middle: %9s deltaX=%3d, deltaY=%3d ScrollWheel: %3d\n",
+            "Left: %9s Right: %9s Middle: %9s deltaX=%3d, deltaY=%3d angle: %3d\n",
             leftButton.getStateName().c_str(),
             rightButton.getStateName().c_str(),
             middleButton.getStateName().c_str(),
             movement.deltaX,
             movement.deltaY,
-            scrollWheel);
+            swAngle);
     }
 
     bool Mouse::isScrollWheelActive() const {
-        return (std::abs(scrollWheel) > SCROLLWHEEL_THRESHOLD);
+        return scrollWheelActive;
     }
 
     bool Mouse::isButtonPressed(const MouseButtonStateMachine::Button &queryButton) {
@@ -90,19 +109,15 @@ namespace Hilton {
         return button.getState() == MouseButtonStateMachine::State::Idle;
     }
 
-    bool Mouse::isButtonReleased(const MouseButtonStateMachine::Button &queryButton) {
-        const MouseButtonStateMachine &button = getButton(queryButton);
-        return button.getState() == MouseButtonStateMachine::State::Released;
-    }
-
     void Mouse::printStatus() const {
-        printf("Left: %9s, Right: %9s, Middle: %9s, Wheel: %9s, X=%4d, Y=%4d, ScrollWheel=%4d\n",
+        printf("L: %9s, R: %9s, M: %9s, W: %9s, X=%4d, Y=%4d, ScrollWheel=%4d (%s)\n",
                leftButton.getStateName().c_str(),
                rightButton.getStateName().c_str(),
                middleButton.getStateName().c_str(),
                wheelButton.getStateName().c_str(),
                movement.deltaX,
                movement.deltaY,
-               scrollWheel);
+               swAngle,
+               isScrollWheelActive() ? "ON" : "OFF");
     }
 }
