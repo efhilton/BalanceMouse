@@ -59,8 +59,8 @@ namespace Hilton {
         const bool isLeftButtonIdle = m->isButtonIdle(Left);
         const bool isMiddleButtonIdle = m->isButtonIdle(Middle);
         const bool isRightButtonIdle = m->isButtonIdle(Right);
-        const bool isXButtonActionSpeed = std::abs(d.gyroscope.x) > X_DOT_THRESHOLD;
-        const bool isYButtonActionSpeed = std::abs(d.gyroscope.y) > Y_DOT_THRESHOLD;
+        const bool isXButtonActionSpeed = std::abs(d.rawGyro.x) > X_DOT_THRESHOLD;
+        const bool isYButtonActionSpeed = std::abs(d.rawGyro.y) > Y_DOT_THRESHOLD;
         const float deltaX = d.tilt.x - m->getMovement().deltaX;
         const float deltaY = d.tilt.y - m->getMovement().deltaY;
 
@@ -116,21 +116,7 @@ namespace Hilton {
     template<typename DataT, typename UserT>
     static bool handleCatchAll(const DataT &d, Mouse *m) {
         m->updateMovement(0, 0);
-        return false;
-    }
-
-    // Optional raw printer handler (can be disabled to save time)
-    template<typename DataT, typename UserT>
-    static bool handlePrintRaw(const DataT &d, Mouse * /*ignored*/) {
-        printf(
-            "Accel (%6.2f %6.2f %6.2f), Gyro (%6.2f, %6.2f, %6.2f)\n",
-            d.accelerometer.x,
-            d.accelerometer.y,
-            d.accelerometer.z,
-            d.gyroscope.x,
-            d.gyroscope.y,
-            d.gyroscope.z);
-        return false;
+        return true;
     }
 
     // Template definition moved from the header; explicit instantiation provided below
@@ -139,11 +125,10 @@ namespace Hilton {
         static bool initialized = false;
         if (!initialized) {
             // Register handlers (enable what you need)
-            // chain.addHandler(handleScrollWheel<Qmi8658C::DataPoint, Mouse *>);
-            // chain.addHandler(handleButtonClick<Qmi8658C::DataPoint, Mouse *>);
-            // chain.addHandler(handleMouseMovement<Qmi8658C::DataPoint, Mouse *>);
-            // chain.addHandler(handleCatchAll<Qmi8658C::DataPoint, Mouse *>);
-            chain.addHandler(handlePrintRaw<Qmi8658C::DataPoint, Mouse *>);
+            chain.addHandler(handleScrollWheel<Qmi8658C::DataPoint, Mouse *>);
+            chain.addHandler(handleButtonClick<Qmi8658C::DataPoint, Mouse *>);
+            chain.addHandler(handleMouseMovement<Qmi8658C::DataPoint, Mouse *>);
+            chain.addHandler(handleCatchAll<Qmi8658C::DataPoint, Mouse *>);
             initialized = true;
         }
 

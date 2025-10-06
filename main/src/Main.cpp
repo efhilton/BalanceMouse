@@ -85,7 +85,7 @@ extern "C" void app_main(void) {
         }
     };
 
-    const uint32_t id = qmi8658C->dataService.addCallback(onSensorData, mouse.get());
+    const uint32_t id = qmi8658C->simpleNotificationService.addCallback(onSensorData, mouse.get());
     ESP_LOGI(TAG, "Registered QMI8658 callback with id %u", id);
 
     const uint32_t id2 = mouseEventDetector->simpleNotificationService.addCallback(onMouseData, nullptr);
@@ -93,6 +93,17 @@ extern "C" void app_main(void) {
 
     const uint32_t id3 = mouseEventDetector->simpleNotificationService.addCallback(controlLights, ledController.get());
     ESP_LOGI(TAG, "Registered mouseEventDetector callback for light control with id %u", id3);
+
+#ifdef DO_DEBUG
+    auto printData = [](const Hilton::Qmi8658C::DataPoint &data, const void * /*ignored*/) {
+        // Debug: Print raw bytes to verify data is changing
+        ESP_LOGI(TAG, "Raw data: A[%5.1f %5.1f %5.1f] G[%5.1f %5.1f %5.1f]",
+                 data.rawAccel.x, data.rawAccel.y, data.rawAccel.z,
+                 data.rawGyro.x, data.rawGyro.y, data.rawGyro.z);
+    };
+    const uint32_t id4 = qmi8658C->simpleNotificationService.addCallback(printData, nullptr);
+    ESP_LOGI(TAG, "Registered print raw with id %u", id4);
+#endif
 
     // Main task can do other things or just wait
     while (true) {

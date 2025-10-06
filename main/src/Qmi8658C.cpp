@@ -48,6 +48,12 @@ namespace Hilton {
         esp_err_t err = i2c_master_transmit_receive(deviceHandle, &startReg, 1, buffer, len, 1000);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to read multiple registers starting at 0x%02X: %s", startReg, esp_err_to_name(err));
+
+            // Debug: Print what we actually received on failure
+            ESP_LOGE(TAG, "Received bytes on error:");
+            for (size_t i = 0; i < len && i < 12; i++) {
+                ESP_LOGE(TAG, "  [%zu] = 0x%02X", i, buffer[i]);
+            }
         }
         return err;
     }
@@ -69,20 +75,64 @@ namespace Hilton {
         lastOrientation = {0, 0, 0};
         lastSampleTime = esp_timer_get_time();
 
-        // Verify device ID
-        uint8_t whoami = 0;
-        if (readReg(QMI8658_REG_WHOAMI, &whoami) != ESP_OK || whoami != QMI8658_REG_WHOAMI_DEFAULT) {
-            ESP_LOGE(TAG, "WHOAMI failed or unexpected: 0x%02X", whoami);
+        ESP_LOGI(TAG, "Scanning I2C bus for devices...");
+        if (scanI2C() != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to scan devices");
             return ESP_FAIL;
         }
 
-        // Reset sensor
+        // Verify device ID MULTIPLE times to ensure I2C is working
+        for (int attempt = 0; attempt < 3; attempt++) {
+            uint8_t whoami = 0;
+            esp_err_t err = readReg(QMI8658_REG_WHOAMI, &whoami);
+            ESP_LOGI(TAG, "WHO_AM_I attempt %d: err=%s, value=0x%02X", attempt + 1, esp_err_to_name(err), whoami);
+
+            if (err == ESP_OK && whoami == QMI8658_REG_WHOAMI_DEFAULT) {
+                ESP_LOGI(TAG, "Device ID verified successfully");
+                break;
+            }
+
+            if (attempt == 2) {
+                ESP_LOGE(TAG, "Device ID verification failed after 3 attempts");
+                return ESP_FAIL;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        // Perform a more thorough reset
+        ESP_LOGI(TAG, "Performing sensor reset...");
+
+        // First, try to reset via register
         esp_err_t err = writeReg(QMI8658_REG_RESET, QMI8658_REG_RESET_DEFAULT);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to reset sensor: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "Failed to write reset register: %s", esp_err_to_name(err));
             return err;
         }
-        vTaskDelay(pdMS_TO_TICKS(100)); // Wait for reset
+
+        // Wait longer for reset to complete
+        vTaskDelay(pdMS_TO_TICKS(200)); // Increased from 100ms
+
+        // Verify device comes back online
+        uint8_t whoami = 0;
+        for (int retry = 0; retry < 10; retry++) {
+            err = readReg(QMI8658_REG_WHOAMI, &whoami);
+            ESP_LOGI(TAG, "Post-reset WHO_AM_I attempt %d: err=%s, value=0x%02X",
+                     retry + 1, esp_err_to_name(err), whoami);
+
+            if (err == ESP_OK && whoami == QMI8658_REG_WHOAMI_DEFAULT) {
+                ESP_LOGI(TAG, "Device reset successful");
+                break;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        if (err != ESP_OK || whoami != QMI8658_REG_WHOAMI_DEFAULT) {
+            ESP_LOGE(TAG, "Device reset failed - WHO_AM_I: expected 0x%02X, got 0x%02X",
+                     QMI8658_REG_WHOAMI_DEFAULT, whoami);
+            return ESP_FAIL;
+        }
 
         // Configure sensor
         err = configure();
@@ -110,6 +160,14 @@ namespace Hilton {
         // Disable sensors first
         err = writeReg(QMI8658_REG_CTRL7, 0x00);
         if (err != ESP_OK) return err;
+
+        // Enable ONLY address auto-increment (bit 6)
+        err = writeReg(QMI8658_REG_CTRL1, QMI8658_CTRL1_ADDR_AI);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to enable address auto-increment");
+            return err;
+        }
+        ESP_LOGI(TAG, "Enabled address auto-increment for multi-byte reads");
 
         // Configure accelerometer: ±2G range, 50Hz ODR
         err = writeReg(QMI8658_REG_CTRL2, 0x05);
@@ -139,14 +197,36 @@ namespace Hilton {
         return ESP_OK;
     }
 
-    // Simple polling method to read sensor data
     esp_err_t Qmi8658C::readSensorData(DataPoint &point) {
+        // Check status register to see if data is ready
+        uint8_t status = 0;
+        esp_err_t err = readReg(QMI8658_REG_STATUS0, &status);
+        if (err == ESP_OK) {
+            ESP_LOGD(TAG, "Status register: 0x%02X (Accel ready: %s, Gyro ready: %s)",
+                     status,
+                     (status & QMI8658_STATUS0_AVAIL_ACCEL) ? "YES" : "NO",
+                     (status & QMI8658_STATUS0_AVAIL_GYRO) ? "YES" : "NO");
+        }
+
         uint8_t data[12]; // 6 bytes for accel, 6 bytes for gyro
 
         // Read all sensor data in one go
-        esp_err_t err = readMultipleRegs(QMI8658_REG_AX_L, data, sizeof(data));
+        err = readMultipleRegs(QMI8658_REG_AX_L, data, sizeof(data));
         if (err != ESP_OK) {
             return err;
+        }
+
+        // Debug: Check for the problematic 0x84 pattern
+        bool allSame84 = true;
+        for (int i = 0; i < 11; i++) {
+            // Check first 11 bytes
+            if (data[i] != 0x84) {
+                allSame84 = false;
+                break;
+            }
+        }
+        if (allSame84) {
+            ESP_LOGW(TAG, "⚠ Detected 0x84 pattern - sensor not providing real data");
         }
 
         // Calculate time delta
@@ -175,7 +255,7 @@ namespace Hilton {
         while (!self->shouldStop) {
             if (self->readSensorData(data) == ESP_OK) {
                 // Notify callbacks
-                self->dataService.notify(data);
+                self->simpleNotificationService.notify(data);
             } else {
                 ESP_LOGW(TAG, "Failed to read sensor data");
             }
@@ -209,18 +289,18 @@ namespace Hilton {
 
     void Qmi8658C::populateAcceleration(DataPoint &point, const float &deltaTime) {
         // Calculate angular acceleration as the rate of change of angular velocity
-        point.acceleration.x = kalmanAccelerationX.estimate((point.gyroscope.x - lastGyro.x) / deltaTime, 0, deltaTime);
-        point.acceleration.y = kalmanAccelerationY.estimate((point.gyroscope.y - lastGyro.y) / deltaTime, 0, deltaTime);
-        point.acceleration.z = kalmanAccelerationZ.estimate((point.gyroscope.z - lastGyro.z) / deltaTime, 0, deltaTime);
+        point.acceleration.x = kalmanAccelerationX.estimate((point.rawGyro.x - lastGyro.x) / deltaTime, 0, deltaTime);
+        point.acceleration.y = kalmanAccelerationY.estimate((point.rawGyro.y - lastGyro.y) / deltaTime, 0, deltaTime);
+        point.acceleration.z = kalmanAccelerationZ.estimate((point.rawGyro.z - lastGyro.z) / deltaTime, 0, deltaTime);
 
-        lastGyro = point.gyroscope;
+        lastGyro = point.rawGyro;
     }
 
     void Qmi8658C::populateTilt(DataPoint &point, const float &deltaTime) {
         constexpr float g = 9.81f;
-        const float ax = point.accelerometer.x / g;
-        const float ay = point.accelerometer.y / g;
-        const float az = point.accelerometer.z / g;
+        const float ax = point.rawAccel.x / g;
+        const float ay = point.rawAccel.y / g;
+        const float az = point.rawAccel.z / g;
 
         // Direct tilt calculation from accelerometer
         const float roll = std::atan2(ay, az);
@@ -236,39 +316,148 @@ namespace Hilton {
         constexpr float ALPHA = 0.98f; // Complementary filter weight
 
         // Integrate gyro data to estimate angular changes
-        lastOrientation.x += point.gyroscope.x * deltaTime; // Roll
-        lastOrientation.y += point.gyroscope.y * deltaTime; // Pitch
-        lastOrientation.z += point.gyroscope.z * deltaTime; // Yaw
+        lastOrientation.x += point.rawGyro.x * deltaTime; // Roll
+        lastOrientation.y += point.rawGyro.y * deltaTime; // Pitch
+        lastOrientation.z += point.rawGyro.z * deltaTime; // Yaw
 
         // Calculate pitch and roll from accelerometer
-        const float accelPitch = std::atan2(point.accelerometer.x,
-                                            std::sqrt(point.accelerometer.y * point.accelerometer.y +
-                                                      point.accelerometer.z * point.accelerometer.z));
-        const float accelRoll = std::atan2(point.accelerometer.y,
-                                           std::sqrt(point.accelerometer.x * point.accelerometer.x +
-                                                     point.accelerometer.z * point.accelerometer.z));
+        const float accelPitch = std::atan2(point.rawAccel.x,
+                                            std::sqrt(point.rawAccel.y * point.rawAccel.y +
+                                                      point.rawAccel.z * point.rawAccel.z));
+        const float accelRoll = std::atan2(point.rawAccel.y,
+                                           std::sqrt(point.rawAccel.x * point.rawAccel.x +
+                                                     point.rawAccel.z * point.rawAccel.z));
 
         // Use complementary filter to fuse gyro and accelerometer
         lastOrientation.x = ALPHA * lastOrientation.x + (1 - ALPHA) * (accelRoll * 180.0f / M_PI);
         lastOrientation.y = ALPHA * lastOrientation.y + (1 - ALPHA) * (accelPitch * 180.0f / M_PI);
 
         // Apply Kalman filters
-        point.orientation.x = kalmanOrientationX.estimate(lastOrientation.x, point.gyroscope.x, deltaTime);
-        point.orientation.y = kalmanOrientationY.estimate(lastOrientation.y, point.gyroscope.y, deltaTime);
-        point.orientation.z = kalmanOrientationZ.estimate(lastOrientation.z, point.gyroscope.z, deltaTime);
+        point.orientation.x = kalmanOrientationX.estimate(lastOrientation.x, point.rawGyro.x, deltaTime);
+        point.orientation.y = kalmanOrientationY.estimate(lastOrientation.y, point.rawGyro.y, deltaTime);
+        point.orientation.z = kalmanOrientationZ.estimate(lastOrientation.z, point.rawGyro.z, deltaTime);
     }
 
     void Qmi8658C::populateRawAccelerometer(DataPoint &point, const uint8_t *data) {
         constexpr float ACCEL_SCALE = 2.0f * 9.81 / 32768.0f; // For ±2G range, in m/s^2
-        point.accelerometer.x = static_cast<float>(static_cast<int16_t>((data[1] << 8) | data[0])) * ACCEL_SCALE;
-        point.accelerometer.y = static_cast<float>(static_cast<int16_t>((data[3] << 8) | data[2])) * ACCEL_SCALE;
-        point.accelerometer.z = static_cast<float>(static_cast<int16_t>((data[5] << 8) | data[4])) * ACCEL_SCALE;
+
+        // Read raw values
+        float rawX = static_cast<float>(static_cast<int16_t>((data[1] << 8) | data[0])) * ACCEL_SCALE;
+        float rawY = static_cast<float>(static_cast<int16_t>((data[3] << 8) | data[2])) * ACCEL_SCALE;
+        float rawZ = static_cast<float>(static_cast<int16_t>((data[5] << 8) | data[4])) * ACCEL_SCALE;
+
+        // Accelerometers point in the direction of the force that OPPOSES gravity.
+        // Let's flip them all so that it gives a positive 9.8 m/s^2 in the direction
+        // that the sensor is pointing down. So, if x is down, we get +9.8. If y points down, we get +9.8.
+        // and if z points down, we get a positive 9.8.
+        point.rawAccel.x = -rawX; // Flip X
+        point.rawAccel.y = -rawY; // Flip Y
+        point.rawAccel.z = -rawZ; // Flip Z
     }
 
     void Qmi8658C::populateRawGyroscope(DataPoint &point, const uint8_t *data) {
         constexpr float GYRO_SCALE = 512.0f / 32768.0f; // For ±512DPS range
-        point.gyroscope.x = static_cast<float>(static_cast<int16_t>((data[7] << 8) | data[6])) * GYRO_SCALE;
-        point.gyroscope.y = static_cast<float>(static_cast<int16_t>((data[9] << 8) | data[8])) * GYRO_SCALE;
-        point.gyroscope.z = static_cast<float>(static_cast<int16_t>((data[11] << 8) | data[10])) * GYRO_SCALE;
+        point.rawGyro.x = static_cast<float>(static_cast<int16_t>((data[7] << 8) | data[6])) * GYRO_SCALE;
+        point.rawGyro.y = static_cast<float>(static_cast<int16_t>((data[9] << 8) | data[8])) * GYRO_SCALE;
+        point.rawGyro.z = static_cast<float>(static_cast<int16_t>((data[11] << 8) | data[10])) * GYRO_SCALE;
+    }
+
+    esp_err_t Qmi8658C::scanI2C() const {
+        ESP_LOGI(TAG, "=== I2C DEVICE COMMUNICATION TEST ===");
+
+        // Test communication with our configured device (0x6B)
+        ESP_LOGI(TAG, "Testing communication with QMI8658C at address 0x%02X...", QMI8658_L_SLAVE_ADDRESS);
+
+        // Test 1: WHO_AM_I register
+        uint8_t whoami = 0xFF; // Initialize with invalid value
+        esp_err_t err = readReg(QMI8658_REG_WHOAMI, &whoami);
+
+        ESP_LOGI(TAG, "WHO_AM_I test: err=%s, value=0x%02X (expected=0x%02X)",
+                 esp_err_to_name(err), whoami, QMI8658_REG_WHOAMI_DEFAULT);
+
+        if (err == ESP_OK) {
+            if (whoami == QMI8658_REG_WHOAMI_DEFAULT) {
+                ESP_LOGI(TAG, "✓ Device responds correctly - I2C communication OK");
+            } else {
+                ESP_LOGW(TAG, "⚠ Device responds but with unexpected WHO_AM_I value");
+            }
+        } else {
+            ESP_LOGE(TAG, "✗ Failed to read WHO_AM_I - I2C communication problem");
+            return err;
+        }
+
+        // Test 2: REVISION register (should be readable)
+        uint8_t revision = 0xFF;
+        err = readReg(QMI8658_REG_REVISION, &revision);
+        ESP_LOGI(TAG, "REVISION test: err=%s, value=0x%02X", esp_err_to_name(err), revision);
+
+        // Test 3: Try reading all control registers to see current state
+        uint8_t ctrl2 = 0xFF, ctrl3 = 0xFF, ctrl7 = 0xFF;
+        esp_err_t err2 = readReg(QMI8658_REG_CTRL2, &ctrl2);
+        esp_err_t err3 = readReg(QMI8658_REG_CTRL3, &ctrl3);
+        esp_err_t err7 = readReg(QMI8658_REG_CTRL7, &ctrl7);
+
+        ESP_LOGI(TAG, "Control registers:");
+        ESP_LOGI(TAG, "  CTRL2 (Accel): err=%s, value=0x%02X", esp_err_to_name(err2), ctrl2);
+        ESP_LOGI(TAG, "  CTRL3 (Gyro):  err=%s, value=0x%02X", esp_err_to_name(err3), ctrl3);
+        ESP_LOGI(TAG, "  CTRL7 (Enable): err=%s, value=0x%02X", esp_err_to_name(err7), ctrl7);
+
+        // Test 4: Status register
+        uint8_t status = 0xFF;
+        esp_err_t errStatus = readReg(QMI8658_REG_STATUS0, &status);
+        ESP_LOGI(TAG, "STATUS0: err=%s, value=0x%02X", esp_err_to_name(errStatus), status);
+        if (errStatus == ESP_OK) {
+            ESP_LOGI(TAG, "  Accel data ready: %s", (status & QMI8658_STATUS0_AVAIL_ACCEL) ? "YES" : "NO");
+            ESP_LOGI(TAG, "  Gyro data ready:  %s", (status & QMI8658_STATUS0_AVAIL_GYRO) ? "YES" : "NO");
+        }
+
+        // Test 5: Sample a few data registers to see if they're changing
+        ESP_LOGI(TAG, "Sampling data registers (3 samples with 100ms intervals):");
+        for (int sample = 0; sample < 3; sample++) {
+            uint8_t ax_l, ax_h, gx_l, gx_h;
+            readReg(QMI8658_REG_AX_L, &ax_l);
+            readReg(QMI8658_REG_AX_H, &ax_h);
+            readReg(QMI8658_REG_GX_L, &gx_l);
+            readReg(QMI8658_REG_GX_H, &gx_h);
+
+            ESP_LOGI(TAG, "  Sample %d: AX_L=0x%02X AX_H=0x%02X GX_L=0x%02X GX_H=0x%02X",
+                     sample + 1, ax_l, ax_h, gx_l, gx_h);
+
+            if (sample < 2) {
+                // Don't delay after last sample
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }
+
+        // Test 6: Read multiple registers at once (this is what fails in your case)
+        ESP_LOGI(TAG, "Testing multi-register read (12 bytes from 0x%02X):", QMI8658_REG_AX_L);
+        uint8_t multiData[12];
+        esp_err_t errMulti = readMultipleRegs(QMI8658_REG_AX_L, multiData, sizeof(multiData));
+        ESP_LOGI(TAG, "Multi-read result: %s", esp_err_to_name(errMulti));
+
+        if (errMulti == ESP_OK) {
+            ESP_LOGI(TAG, "Multi-read data: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                     multiData[0], multiData[1], multiData[2], multiData[3],
+                     multiData[4], multiData[5], multiData[6], multiData[7],
+                     multiData[8], multiData[9], multiData[10], multiData[11]);
+
+            // Check for problematic patterns
+            bool allSame = true;
+            for (int i = 1; i < 12; i++) {
+                if (multiData[i] != multiData[0]) {
+                    allSame = false;
+                    break;
+                }
+            }
+
+            if (allSame) {
+                ESP_LOGW(TAG, "⚠ WARNING: All bytes identical (0x%02X) - sensor may not be sampling", multiData[0]);
+            } else {
+                ESP_LOGI(TAG, "✓ Multi-read data shows variation - looks good");
+            }
+        }
+
+        ESP_LOGI(TAG, "=== I2C TEST COMPLETE ===");
+        return ESP_OK;
     }
 } // namespace Hilton

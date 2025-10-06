@@ -24,10 +24,14 @@ namespace Hilton {
         static constexpr uint8_t QMI8658_REG_REVISION{0x01};
 
         //* Setup and Control Registers
+        static constexpr uint8_t QMI8658_REG_CTRL1{0x02};
         static constexpr uint8_t QMI8658_REG_CTRL2{0x03};
         static constexpr uint8_t QMI8658_REG_CTRL3{0x04};
         static constexpr uint8_t QMI8658_REG_CTRL7{0x08};
         static constexpr uint8_t QMI8658_REG_RESET{0x60};
+
+        // CNTRL1 Bits
+        static constexpr uint8_t QMI8658_CTRL1_ADDR_AI{0x40};  // Bit 6: Address auto-increment enable
 
         //* Data Output Registers
         static constexpr uint8_t QMI8658_REG_AX_L{0x35};
@@ -43,6 +47,10 @@ namespace Hilton {
         static constexpr uint8_t QMI8658_REG_GZ_L{0x3F};
         static constexpr uint8_t QMI8658_REG_GZ_H{0x40};
 
+        static constexpr uint8_t QMI8658_REG_STATUS0{0x2E};
+        static constexpr uint8_t QMI8658_STATUS0_AVAIL_ACCEL{0x01};
+        static constexpr uint8_t QMI8658_STATUS0_AVAIL_GYRO{0x02};
+
         static constexpr uint8_t QMI8658_ACCEL_EN_MASK{0x01};
         static constexpr uint8_t QMI8658_GYRO_EN_MASK{0x02};
 
@@ -53,8 +61,8 @@ namespace Hilton {
         };
 
         struct DataPoint {
-            Point accelerometer; // Linear acceleration, from sensor.
-            Point gyroscope; // Angular speed, from sensor.
+            Point rawAccel; // Linear acceleration, from sensor.
+            Point rawGyro; // Angular speed, from sensor.
             Point acceleration; // Angular acceleration, calculated.
             Point orientation; // Orientation (angle), calculated
             Point tilt; // Tilt (angle), calculated
@@ -70,7 +78,7 @@ namespace Hilton {
         esp_err_t readSensorData(DataPoint &point);
 
         // Simple notification service for data callbacks
-        SimpleNotificationService<DataPoint> dataService;
+        SimpleNotificationService<DataPoint> simpleNotificationService;
 
     private:
         i2c_master_bus_handle_t busHandle;
@@ -85,6 +93,9 @@ namespace Hilton {
         // Data processing methods
         static void populateRawAccelerometer(DataPoint &point, const uint8_t *data);
         static void populateRawGyroscope(DataPoint &point, const uint8_t *data);
+
+        esp_err_t scanI2C() const;
+
         void populateAcceleration(DataPoint &point, const float &deltaTime);
         void populateOrientation(DataPoint &point, const float &deltaTime);
         void populateTilt(DataPoint &point, const float &deltaTime);

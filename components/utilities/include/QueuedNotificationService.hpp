@@ -14,6 +14,25 @@
 
 namespace Hilton {
     /**
+     * @brief Information container for a registered keyed callback
+     * @details Stored by value to avoid dangling references and to allow copying/assignment
+     *          (important for containers and FreeRTOS usage)
+     * @tparam KeyT Type of the key used for filtering notifications
+     * @tparam DataT Type of the data payload in the notification
+     * @tparam UserT Type of the user data passed to callback (defaults to void*)
+     */
+    template < typename
+    KeyT, typename
+    DataT, typename
+    UserT = void * >
+    struct CallbackInfo {
+        uint32_t id; ///< Unique identifier for the callback
+        KeyT key; ///< Key used for filtering notifications
+        OnDataCallback<KeyT, DataT, UserT> callback; ///< The callback function
+        UserT userData; ///< User-defined data passed to callback
+    };
+
+    /**
      * @brief A thread-safe notification service that queues and dispatches notifications to registered callbacks
      *
      * This service allows registering multiple callbacks that can receive notifications based on a key.
@@ -48,11 +67,11 @@ namespace Hilton {
      * @endcode
      */
 
-    template<
-        typename KeyDt,
+    template <
+    typename KeyDt,
         typename DataDt,
         typename UserDt = std::any,
-        typename = std::enable_if_t<std::is_enum_v<KeyDt> > >
+            typename = std::enable_if_t<std::is_enum_v<KeyDt> > >
     class QueuedNotificationService {
         struct QueueItem {
             KeyDt key;
@@ -70,14 +89,21 @@ namespace Hilton {
          * @param priority Priority of the notification processing task (default: tskIDLE_PRIORITY + 1)
          */
         QueuedNotificationService(
-            const size_t queueSize,
-            const char *taskName,
-            const uint32_t stackSize = 2048,
-            const UBaseType_t priority = tskIDLE_PRIORITY + 1,
-            const bool startProcessingTask = true)
-            : callbacks()
-              , queue(xQueueCreate(queueSize, sizeof(QueueItem)))
-              , queueSize(queueSize) {
+
+        const size_t queueSize,
+
+        const char *taskName,
+
+        const uint32_t stackSize = 2048,
+
+        const UBaseType_t priority = tskIDLE_PRIORITY + 1,
+
+        const bool startProcessingTask = true
+        )
+        :
+        callbacks()
+                , queue(xQueueCreate(queueSize, sizeof(QueueItem)))
+                , queueSize(queueSize) {
             callbacksMutex = xSemaphoreCreateMutex();
             if (callbacksMutex == nullptr) {
                 ESP_LOGE(TAG, "Failed to create mutex");
@@ -155,8 +181,14 @@ namespace Hilton {
                     std::remove_if(
                         callbacks.begin(),
                         callbacks.end(),
-                        [id](const CallbackInfo<KeyDt, DataDt, UserDt> &info) { return info.id == id; }),
-                    callbacks.end());
+                        [id](const CallbackInfo<KeyDt, DataDt, UserDt>&info) {
+                    return info.id == id;
+                }
+                )
+                ,
+                callbacks.end()
+                )
+                ;
                 xSemaphoreGive(callbacksMutex);
             } else {
                 ESP_LOGE(TAG, "Failed to acquire mutex for erasing callback");
@@ -168,7 +200,7 @@ namespace Hilton {
          * @param key The key identifying which callbacks should receive the notification
          * @param data The data to be passed to the callbacks
          */
-        void notify(const KeyDt key, const DataDt &data) {
+        void notify(const KeyDt key, const DataDt&data) {
             if (queue == nullptr) {
                 ESP_LOGE(TAG, "Queue is not initialized");
                 return;
@@ -197,16 +229,26 @@ namespace Hilton {
                 if (xQueueReceive(service->queue, &packet, portMAX_DELAY) == pdPASS) {
                     // Notify all registered callbacks
                     if (xSemaphoreTake(service->callbacksMutex, portMAX_DELAY) == pdTRUE) {
-                        for (const auto &[id, key, callback, userData]: service->callbacks) {
-                            try {
+                        for (const auto&
+                        [
+                        id, key, callback, userData
+                        ]
+                        :
+                        service->callbacks
+                        ) {
+                            try{
                                 if (key != packet.key) {
                                     continue;
+
                                 }
                                 callback(key, packet.data, userData);
-                            } catch (const std::exception &e) {
+
+                            }
+                            catch(const std::exception & e) {
                                 ESP_LOGE(
                                     TAG, "Exception in callback id=%d: %s ---> Ignoring", id, e.what());
-                            } catch (...) {
+                            }
+                            catch(...) {
                                 ESP_LOGE(TAG, "Unknown exception in callback id=%d ---> Ignoring", id);
                             }
                         }

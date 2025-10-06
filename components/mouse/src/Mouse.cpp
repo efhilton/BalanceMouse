@@ -96,7 +96,7 @@ namespace Hilton {
     }
 
     void Mouse::printStatus() const {
-        printf("Left: %s, Right: %s, Middle: %s, Wheel: %s, X=%d, Y=%d, ScrollWheel=%d\n",
+        printf("Left: %9s, Right: %9s, Middle: %9s, Wheel: %9s, X=%4d, Y=%4d, ScrollWheel=%4d\n",
                leftButton.getStateName().c_str(),
                rightButton.getStateName().c_str(),
                middleButton.getStateName().c_str(),
