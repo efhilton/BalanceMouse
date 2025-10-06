@@ -10,7 +10,7 @@ template<typename DataDt, typename UserDt>
 class ChainOfResponsibility
 {
 public:
-    using CorHandler = std::function<bool(const DataDt &, UserDt &)>;
+    using CorHandler = std::function<bool(const DataDt &, const UserDt &)>;
 
     void addHandler(const CorHandler &handler)
     {
@@ -47,7 +47,7 @@ public:
         }
     }
 
-    bool handle(const DataDt &event, UserDt &context) const
+    bool handle(const DataDt &event, const UserDt &context) const
     {
         auto current = head;
         while (current) {

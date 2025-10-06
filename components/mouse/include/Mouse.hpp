@@ -20,8 +20,8 @@ public:
         WheelButton = BIT3
     };
 
-    ScrollWheelDt SCROLLWHEEL_THRESHOLD{10};
-    MovementDt MOVEMENT_THRESHOLD{10};
+    static constexpr ScrollWheelDt SCROLLWHEEL_THRESHOLD{10};
+    static constexpr MovementDt MOVEMENT_THRESHOLD{10};
 
     struct Movement
     {

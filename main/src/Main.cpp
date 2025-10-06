@@ -1,16 +1,15 @@
-#include <cstdio>
-
 #include <any>
+#include <cstdio>
+#include <esp_err.h>
+#include <esp_log.h>
 #include <I2cManager.hpp>
+#include <LedController.hpp>
 #include <memory>
 #include <MouseEventDetector.hpp>
 #include <Qmi8658C.hpp>
-#include <esp_err.h>
-#include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/projdefs.h>
 #include <freertos/task.h>
-#include <LedController.hpp>
 
 static constexpr auto TAG{"BALANCE_BOARD"};
 
@@ -33,14 +32,15 @@ using BalanceBoardConfig = struct {
 };
 
 static OnSimpleCallback<std::shared_ptr<Hilton::Mouse> > onMouseData =
-        [](const std::shared_ptr<Hilton::Mouse> &mouse, const std::any &ignored) {
+        [](const std::shared_ptr<Hilton::Mouse> &mouse, const void * /* ignored */) {
     ESP_LOGI(TAG, "Mouse data received");
 };
 
 static OnSimpleCallback<std::shared_ptr<Hilton::Mouse> > controlLights = [
-        ](const std::shared_ptr<Hilton::Mouse> &mouse, const std::any &ledControllerPtr) {
+        ](const std::shared_ptr<Hilton::Mouse> &mouse, const void *ledcontrollerptr) {
     ESP_LOGI(TAG, "Light Control data received");
 };
+
 
 extern "C" void app_main(void) {
     constexpr BalanceBoardConfig config{
@@ -68,22 +68,33 @@ extern "C" void app_main(void) {
     auto qmi8658C = std::make_shared<Hilton::Qmi8658C>(i2CManager->getBusHandle());
 
     ESP_LOGI(TAG, "Initializing QMI8658C");
-    esp_err_t init_result = qmi8658C->initialize(config.int1_pin, config.int2_pin);
+    esp_err_t init_result = qmi8658C->initialize();
     if (init_result != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize QMI8658C: %s", esp_err_to_name(init_result));
         return;
     }
     ESP_LOGI(TAG, "QMI8658C initialized");
 
-    // Register MouseEventDetector callback with sensor's queued notification service
-    qmi8658C->dataService.addCallback(
-        Hilton::Qmi8658C::QueueKey::DATA_READY,
-        Hilton::MouseEventDetector::onSensorDataIsReady<Hilton::Qmi8658C::QueueKey, Hilton::Qmi8658C::DataPoint,
-            std::any>,
-        mouse);
+    // Register MouseEventDetector callback with sensor's notification service
+    auto onSensorData = [mouseEventDetector](const Hilton::Qmi8658C::DataPoint &data, const void *mousePtr) {
+        if (mousePtr != nullptr) {
+            if (auto activeMouse = static_cast<const std::shared_ptr<Hilton::Mouse> *>(mousePtr);
+                *activeMouse) {
+                mouseEventDetector->onSensorDataIsReady(data, *activeMouse);
+            } else {
+                ESP_LOGW(TAG, "Invalid mouse pointer conversion");
+            }
+        } else {
+            ESP_LOGW(TAG, "Mouse pointer is null, skipping callback");
+        }
+    };
 
-    mouseEventDetector->simpleNotificationService.addCallback(controlLights, ledController);
-    mouseEventDetector->simpleNotificationService.addCallback(onMouseData, nullptr);
+    // Pass pointer to the shared_ptr as userData
+    uint32_t id = qmi8658C->dataService.addCallback(onSensorData, &mouse);
+    ESP_LOGI(TAG, "Registered QMI8658 callback with id %u", id);
+
+    // uint32_t id2 = mouseEventDetector->simpleNotificationService.addCallback(onMouseData, nullptr);
+    // ESP_LOGI(TAG, "Registered mouseEventDetector callback with id %u", id2);
 
     // Main task can do other things or just wait
     while (true) {
