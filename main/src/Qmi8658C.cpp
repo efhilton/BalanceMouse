@@ -7,7 +7,7 @@
 namespace Hilton {
     // Constructor
     Qmi8658C::Qmi8658C(i2c_master_bus_handle_t busHandle)
-        : busHandle(busHandle) {
+        : busHandle(busHandle), highPassGyroZ(0.98f) {
         // Configure I2C device
         i2c_device_config_t deviceConfig = {};
         deviceConfig.dev_addr_length = I2C_ADDR_BIT_LEN_7;
@@ -336,20 +336,13 @@ namespace Hilton {
     }
 
     void Qmi8658C::populateOrientation(DataPoint &point, const float &deltaTime) {
-        constexpr float ALPHA = 0.98f; // Complementary filter weight
-        constexpr float SIGNIFICANT_ROTATION = 2.0f; // °/s threshold for meaningful rotation
-        constexpr float DRIFT_CORRECTION_TIME = 10.0f; // seconds before applying drift correction
-        constexpr float DRIFT_CORRECTION_RATE = 0.0001f; // Very gentle drift correction
-
-        // Static variables to track yaw state
-        static float timeWithoutRotation = 0.0f;
-        static float lastSignificantYaw = 0.0f;
-        static bool hasSignificantRotation = false;
+        constexpr float ALPHA = 0.98f;
 
         // ROLL AND PITCH: Use complementary filter with accelerometer correction
         // Integrate gyroscope data
         lastOrientation.x += point.rawGyro.x * deltaTime;
         lastOrientation.y += point.rawGyro.y * deltaTime;
+        lastOrientation.z += point.rawGyro.z * deltaTime;
 
         // Fuse with accelerometer data using complementary filter
         lastOrientation.x = ALPHA * lastOrientation.x + (1 - ALPHA) * point.tilt.x;
@@ -358,45 +351,7 @@ namespace Hilton {
         // Apply Kalman filtering for roll and pitch
         point.orientation.x = kalmanOrientationX.estimate(lastOrientation.x, point.rawGyro.x, deltaTime);
         point.orientation.y = kalmanOrientationY.estimate(lastOrientation.y, point.rawGyro.y, deltaTime);
-
-        // YAW: Pure integration with intelligent drift correction
-        // Always integrate gyroscope data to maintain position memory
-        lastOrientation.z += point.rawGyro.z * deltaTime;
-
-        // Track rotation activity
-        if (std::abs(point.rawGyro.z) > SIGNIFICANT_ROTATION) {
-            // Active rotation detected
-            timeWithoutRotation = 0.0f;
-            hasSignificantRotation = true;
-            lastSignificantYaw = lastOrientation.z;
-        } else {
-            // No significant rotation
-            timeWithoutRotation += deltaTime;
-        }
-
-        // Apply gentle drift correction only after long periods of inactivity
-        if (hasSignificantRotation && timeWithoutRotation > DRIFT_CORRECTION_TIME) {
-            // Very gentle drift correction toward last known position
-            const float driftError = lastOrientation.z - lastSignificantYaw;
-            const float correction = driftError * DRIFT_CORRECTION_RATE * deltaTime;
-            lastOrientation.z -= correction;
-
-            // If very close to target, snap to it
-            if (std::abs(driftError) < 0.1f) {
-                lastOrientation.z = lastSignificantYaw;
-            }
-        }
-
-        // For yaw, use direct integration result (no Kalman filter to avoid complexity)
-        point.orientation.z = lastOrientation.z;
-
-        // Debug logging
-        // static int debugCounter = 0;
-        // if (++debugCounter % 50 == 0) {
-        //     // Every 1 second at 50Hz
-        //     ESP_LOGI(TAG, "Gyro Z: %.3f°/s, Yaw: %.1f°, IdleTime: %.1fs, Target: %.1f°",
-        //              point.rawGyro.z, point.orientation.z, timeWithoutRotation, lastSignificantYaw);
-        // }
+        point.orientation.z = kalmanOrientationZ.estimate(highPassGyroZ.filter(lastOrientation.z), point.rawGyro.z, deltaTime);
     }
 
     void Qmi8658C::populateRawAccelerometer(DataPoint &point, const uint8_t *data) {

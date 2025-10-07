@@ -100,9 +100,8 @@ namespace Hilton {
 
         // Use Gravity for mouse movement (rotation rates)
         constexpr auto GRAVITY_SCALE{127.0f / 9.8f}; // Sensitivity scaling
-
-        const float rotationX = d.rawAccel.x; // Roll rate
-        const float rotationY = d.rawAccel.y; // Pitch rate
+        const float rotationX = d.rawAccel.x;
+        const float rotationY = d.rawAccel.y;
 
         m->updateMovement(static_cast<Mouse::MovementDt>(GRAVITY_SCALE * rotationX),
                           static_cast<Mouse::MovementDt>(GRAVITY_SCALE * rotationY));

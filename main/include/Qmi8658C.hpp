@@ -1,5 +1,6 @@
 #pragma once
 #include <esp_err.h>
+#include <HighPassFilter.hpp>
 #include <KalmanFilter.hpp>
 #include <SimpleNotificationService.hpp>
 #include <driver/i2c_master.h>
@@ -114,6 +115,7 @@ namespace Hilton {
         KalmanFilter kalmanOrientationX;
         KalmanFilter kalmanOrientationY;
         KalmanFilter kalmanOrientationZ;
+        HighPassFilter highPassGyroZ;
 
         // Task for continuous sampling
         TaskHandle_t taskHandle{nullptr};
