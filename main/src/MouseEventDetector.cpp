@@ -13,8 +13,10 @@ namespace Hilton {
     static bool handleScrollWheel(const Qmi8658C::DataPoint &d, Mouse *m) {
         if (m->isButtonPressed(MouseButtonStateMachine::Button::Left)
             || m->isButtonPressed(MouseButtonStateMachine::Button::Right)
-            || m->isButtonPressed(MouseButtonStateMachine::Button::Middle)
-            || m->isButtonPressed(MouseButtonStateMachine::Button::Wheel)) {
+            || m->isButtonPressed(MouseButtonStateMachine::Button::Middle)) {
+            return false;
+        }
+        if (m->isMoving()) {
             return false;
         }
 
@@ -23,16 +25,14 @@ namespace Hilton {
         constexpr auto SCROLL_SCALE{127.0f / MAX_SCROLL_ANGLE};
         m->setAngle(static_cast<Mouse::ScrollWheelDt>(SCROLL_SCALE * d.orientation.z));
 
-        if (m->isScrollWheelActive()) {
-            m->updateMovement(0, 0); // Stop cursor movement during scroll
-            return true; // signal that we are done proessing.
-        }
-
-        m->setAngle(0);
-        return false;
+        return m->isScrollWheelActive();
     }
 
     static bool handleButtonClick(const Qmi8658C::DataPoint &d, Mouse *m) {
+        if (m->isScrollWheelActive()) {
+            return false;
+        }
+
         using MouseButtonStateMachine::Button::Left;
         using MouseButtonStateMachine::Button::Right;
         using MouseButtonStateMachine::Button::Middle;
@@ -41,50 +41,47 @@ namespace Hilton {
 
         // Use angular speed (gyro) for button detection
         constexpr auto GYRO_PRESS_THRESHOLD{100.0f}; // Angular speed to trigger press
-        constexpr auto LAST_RELEASE_THRESHOLD{pdMS_TO_TICKS(200)}; // Time to wait before releasing button
+        constexpr auto LAST_RELEASE_THRESHOLD{pdMS_TO_TICKS(300)}; // Time to wait before releasing button
         static TickType_t lastMouseRelease = 0;
 
         const float gyroX = d.rawGyro.x; // Roll angular speed
         const float gyroY = d.rawGyro.y; // Pitch angular speed
         const bool isLeftRightClick = std::abs(gyroX) > GYRO_PRESS_THRESHOLD;
         const bool isVerticalClick = std::abs(gyroY) > GYRO_PRESS_THRESHOLD;
+        const bool allButtonsIdle = m->isButtonIdle(Left)
+                                    && m->isButtonIdle(Right)
+                                    && m->isButtonIdle(Middle);
 
-        // LEFT BUTTON (Negative X angular speed)
-        if (isLeftRightClick && gyroX < 0
-            && m->isButtonIdle(Left)
-            && m->isButtonIdle(Right)
-            && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
-            m->getButton(Left).handleEvent(MouseDown);
-            return true;
-        }
-        if (isLeftRightClick && gyroX > 0
-            && m->isButtonPressed(Left)) {
-            m->getButton(Left).handleEvent(MouseUp);
-            lastMouseRelease = xTaskGetTickCount();
-            return true;
-        }
-
-        // RIGHT BUTTON (Positive X angular speed)
-        if (isLeftRightClick && gyroX > 0
-            && m->isButtonIdle(Right)
-            && m->isButtonIdle(Left)
-            && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
-            m->getButton(Right).handleEvent(MouseDown);
-            return true;
-        }
-        if (isLeftRightClick && gyroX < 0
-            && m->isButtonPressed(Right)) {
-            m->getButton(Right).handleEvent(MouseUp);
-            lastMouseRelease = xTaskGetTickCount();
-            return true;
+        // Listen for Press Events
+        if (allButtonsIdle && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
+            if (isLeftRightClick) {
+                if (gyroX < 0) {
+                    m->getButton(Left).handleEvent(MouseDown);
+                    return true;
+                }
+                if (gyroX > 0) {
+                    m->getButton(Right).handleEvent(MouseDown);
+                    return true;
+                }
+            }
+            if (isVerticalClick && gyroY < 0) {
+                m->getButton(Middle).handleEvent(MouseDown);
+                return true;
+            }
         }
 
-        // MIDDLE BUTTON (Negative Y angular speed)
-        if (isVerticalClick && gyroY < 0
-            && m->isButtonIdle(Middle)
-            && (xTaskGetTickCount() - lastMouseRelease) > LAST_RELEASE_THRESHOLD) {
-            m->getButton(Middle).handleEvent(MouseDown);
-            return true;
+        // Listen for Release Events
+        if (isLeftRightClick) {
+            if (gyroX > 0 && m->isButtonPressed(Left)) {
+                m->getButton(Left).handleEvent(MouseUp);
+                lastMouseRelease = xTaskGetTickCount();
+                return true;
+            }
+            if (gyroX < 0 && m->isButtonPressed(Right)) {
+                m->getButton(Right).handleEvent(MouseUp);
+                lastMouseRelease = xTaskGetTickCount();
+                return true;
+            }
         }
         if (isVerticalClick && gyroY > 0
             && m->isButtonPressed(Middle)) {
@@ -97,6 +94,10 @@ namespace Hilton {
     }
 
     static bool handleMouseMovement(const Qmi8658C::DataPoint &d, Mouse *m) {
+        if (m->isScrollWheelActive()) {
+            return false;
+        }
+
         // Use Gravity for mouse movement (rotation rates)
         constexpr auto GRAVITY_SCALE{127.0f / 9.8f}; // Sensitivity scaling
 

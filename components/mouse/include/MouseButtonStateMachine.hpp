@@ -11,7 +11,7 @@ namespace Hilton {
 class MouseButtonStateMachine
 {
 public:
-    enum class Button { Left, Right, Middle, Wheel };
+    enum class Button { Left, Right, Middle };
     enum class State { Idle, Pressed };
     enum class Event { MouseDown, MouseUp };
 

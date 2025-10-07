@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <Mouse.hpp>
 #include <Qmi8658C.hpp>
 #include <SimpleNotificationService.hpp>

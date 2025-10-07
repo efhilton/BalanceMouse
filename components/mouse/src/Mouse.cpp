@@ -9,8 +9,7 @@ namespace Hilton {
     Mouse::Mouse()
         : leftButton(MouseButtonStateMachine::Button::Left)
           , rightButton(MouseButtonStateMachine::Button::Right)
-          , middleButton(MouseButtonStateMachine::Button::Middle)
-          , wheelButton(MouseButtonStateMachine::Button::Wheel) {
+          , middleButton(MouseButtonStateMachine::Button::Middle) {
     }
 
     MouseButtonStateMachine &Mouse::getLeftButton() {
@@ -25,10 +24,6 @@ namespace Hilton {
         return middleButton;
     }
 
-    MouseButtonStateMachine &Mouse::getWheelButton() {
-        return wheelButton;
-    }
-
     MouseButtonStateMachine &Mouse::getButton(const MouseButtonStateMachine::Button &queryButton) {
         switch (queryButton) {
             case MouseButtonStateMachine::Button::Left:
@@ -37,8 +32,6 @@ namespace Hilton {
                 return rightButton;
             case MouseButtonStateMachine::Button::Middle:
                 return middleButton;
-            case MouseButtonStateMachine::Button::Wheel:
-                return wheelButton;
             default:
                 throw std::invalid_argument("Invalid button type");
         }
@@ -57,6 +50,10 @@ namespace Hilton {
         } else if (moving && spd < MOVEMENT_THRESHOLD_STOP) {
             moving = false;
         }
+        if (!moving) {
+            movement.deltaX = 0;
+            movement.deltaY = 0;
+        }
     }
 
     Mouse::Movement &Mouse::getMovement() {
@@ -72,11 +69,12 @@ namespace Hilton {
                                                         static_cast<ScrollWheelDt>(-127),
                                                         static_cast<ScrollWheelDt>(127)));
         if (!scrollWheelActive && std::abs(swAngle) > ANGLE_THRESHOLD_START) {
-            // trigger on
             scrollWheelActive = true;
         } else if (scrollWheelActive && std::abs(swAngle) < ANGLE_THRESHOLD_STOP) {
-            // trigger off
             scrollWheelActive = false;
+        }
+        if (!scrollWheelActive) {
+            swAngle = 0;
         }
     }
 
@@ -110,11 +108,10 @@ namespace Hilton {
     }
 
     void Mouse::printStatus() const {
-        printf("L: %9s, R: %9s, M: %9s, W: %9s, X=%4d, Y=%4d, ScrollWheel=%4d (%s)\n",
+        printf("L: %9s, R: %9s, M: %9s, X=%4d, Y=%4d, ScrollWheel=%4d (%s)\n",
                leftButton.getStateName().c_str(),
                rightButton.getStateName().c_str(),
                middleButton.getStateName().c_str(),
-               wheelButton.getStateName().c_str(),
                movement.deltaX,
                movement.deltaY,
                swAngle,
