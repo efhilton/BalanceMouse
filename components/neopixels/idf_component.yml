@@ -1,0 +1,14 @@
+version: "1.0.0"
+description: "A library to access the neopixels"
+dependencies:
+  idf:
+    version: ">=4.1.0"
+  exceptions:
+    path: ../exceptions
+    version: ">=1.0.0"
+
+paths:
+  include:
+    - include  # Public headers for this component
+  src:
+    - src

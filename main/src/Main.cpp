@@ -1,9 +1,7 @@
-#include <any>
 #include <cstdio>
 #include <esp_err.h>
 #include <esp_log.h>
 #include <I2cManager.hpp>
-#include <LedController.hpp>
 #include <memory>
 #include <MouseEventDetector.hpp>
 #include <Qmi8658C.hpp>
@@ -38,7 +36,6 @@ static OnSimpleCallback<Hilton::Mouse *> onMouseData =
 
 static OnSimpleCallback<Hilton::Mouse *> controlLights = [
         ](const Hilton::Mouse *mouse, const void *ledcontrollerptr) {
-    auto ledController = static_cast<const Hilton::LedController *>(ledcontrollerptr);
 };
 
 
@@ -54,7 +51,6 @@ extern "C" void app_main(void) {
 
     auto i2CManager = std::make_unique<Hilton::I2CManager>(config.i2cNum, config.sda_pin, config.scl_pin);
     auto mouseEventDetector = std::make_shared<Hilton::MouseEventDetector>();
-    auto ledController = std::make_shared<Hilton::LedController>(config.led_control_pin);
     auto mouse = std::make_shared<Hilton::Mouse>();
 
     const esp_err_t err = i2CManager->initialize();
@@ -91,8 +87,8 @@ extern "C" void app_main(void) {
     const uint32_t id2 = mouseEventDetector->simpleNotificationService.addCallback(onMouseData, nullptr);
     ESP_LOGI(TAG, "Registered mouseEventDetector callback with id %u", id2);
 
-    const uint32_t id3 = mouseEventDetector->simpleNotificationService.addCallback(controlLights, ledController.get());
-    ESP_LOGI(TAG, "Registered mouseEventDetector callback for light control with id %u", id3);
+    // const uint32_t id3 = mouseEventDetector->simpleNotificationService.addCallback(controlLights, ledController.get());
+    // ESP_LOGI(TAG, "Registered mouseEventDetector callback for light control with id %u", id3);
 
 #ifdef DO_DEBUG
     auto printData = [](const Hilton::Qmi8658C::DataPoint &data, const void * /*ignored*/) {

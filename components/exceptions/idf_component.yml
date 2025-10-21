@@ -1,0 +1,10 @@
+version: "1.0.0"
+description: "A collection of exceptions that should be used throughout the code"
+
+dependencies:
+  idf:
+    version: ">=4.1.0"
+
+paths:
+  include:
+    - include  # Public headers for this component
