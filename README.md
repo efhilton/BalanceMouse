@@ -1,5 +1,18 @@
 # Balance Board Project
 
+## Purpose
+
+The purpose of this project is to use the ESP32-S3-Matrix device, attached to a balance board, as a bluetooth mouse for my computer. The idea is to attach a battery to the ESP32-S3-Matrix and have it send all the click/movement information to the computer, thus keeping my muscles from becoming dystrophied. 
+
+So, this project uses the gyroscope/accelerometer on the device to detect and simulate mouse movement, clicks, and scroll wheel.  It then acts as a standard Bluetooth HID device that can be discovered by the computer and tuned like any other HID device.  
+
+The LED matrix in the device is used to give visual feedback to the user, such as:
+
+1. device is in bluetooth pairing mode (eg. if it has no bluetooth connection)
+2. left click, middle click, right click (fast tilt of the device on the left, forward, or right)
+3. double clicks (double fast clicks to left/forward/right)
+4. scroll wheel up, scroll wheel down (rotate cw/ccw, respectively)
+
 ## Important Links
 
 - Waveshare ESP32-S3-Matrix: https://www.waveshare.com/wiki/ESP32-S3-Matrix
