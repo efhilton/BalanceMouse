@@ -1,9 +1,5 @@
 #pragma once
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
-#include <iostream>
 #include <string>
 
 namespace Hilton {
@@ -15,7 +11,11 @@ public:
     enum class State { Idle, Pressed };
     enum class Event { MouseDown, MouseUp };
 
-    explicit MouseButtonStateMachine(const Button &button)
+    // NOTE: `button` is taken and stored BY VALUE. It used to be stored as a
+    // `const Button &`, but Mouse's constructor passes temporaries
+    // (e.g. `MouseButtonStateMachine::Button::Left`), so the stored reference
+    // dangled as soon as the constructor returned.
+    explicit MouseButtonStateMachine(const Button button)
         : state(State::Idle)
         , button(button)
     {
@@ -38,6 +38,7 @@ public:
     }
 
     [[nodiscard]] State getState() const { return state; }
+    [[nodiscard]] Button getButton() const { return button; }
     [[nodiscard]] std::string getStateName() const
     {
         switch (state) {
@@ -66,7 +67,7 @@ public:
 
 private:
     State state;
-    const Button &button;
+    Button button;
 };
 
 } // namespace Hilton

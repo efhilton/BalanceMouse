@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <Color.hpp>
+#include <LightLimits.hpp>
 #include <string>
 
 namespace Hilton {
@@ -13,7 +14,8 @@ namespace Hilton {
         LightPixel(const uint8_t r, const uint8_t g, const uint8_t b, const uint8_t w, const uint8_t intensity) : LightPixel(Color(r, g, b, w), intensity) {
         }
 
-        explicit LightPixel(const Color &color, const uint8_t intensity) : Color(color), intensity(intensity) {
+        explicit LightPixel(const Color &color, const uint8_t intensity)
+            : Color(color), intensity(Lights::clampIntensity(intensity)) {
         }
 
         ~LightPixel()  = default;
@@ -35,8 +37,9 @@ namespace Hilton {
             return intensity;
         }
 
+        /** Intensity in percent; hard-clamped to Lights::MAX_INTENSITY_PERCENT (50) to limit heat. */
         LightPixel &setIntensity(const uint8_t intensity) {
-            this->intensity = std::min(intensity, static_cast<uint8_t>(100));
+            this->intensity = Lights::clampIntensity(intensity);
             return *this;
         }
 

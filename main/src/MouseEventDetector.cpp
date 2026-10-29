@@ -23,7 +23,8 @@ namespace Hilton {
         // Use ORIENTATION Z (yaw) for scroll wheel
         constexpr auto MAX_SCROLL_ANGLE{60.0f};
         constexpr auto SCROLL_SCALE{127.0f / MAX_SCROLL_ANGLE};
-        m->setAngle(static_cast<Mouse::ScrollWheelDt>(SCROLL_SCALE * d.orientation.z));
+        // Clamp to the report range BEFORE narrowing to int8_t (see Mouse::saturateToReport).
+        m->setAngle(Mouse::saturateToReport(SCROLL_SCALE * d.orientation.z));
 
         return m->isScrollWheelActive();
     }
@@ -103,8 +104,10 @@ namespace Hilton {
         const float rotationX = d.rawAccel.x;
         const float rotationY = d.rawAccel.y;
 
-        m->updateMovement(static_cast<Mouse::MovementDt>(GRAVITY_SCALE * rotationX),
-                          static_cast<Mouse::MovementDt>(GRAVITY_SCALE * rotationY));
+        // Clamp to the report range BEFORE narrowing to int8_t. Casting first wrapped around
+        // for hard tilts and flipped the cursor direction (see Mouse::saturateToReport).
+        m->updateMovement(Mouse::saturateToReport(GRAVITY_SCALE * rotationX),
+                          Mouse::saturateToReport(GRAVITY_SCALE * rotationY));
 
         return m->isMoving();
     }
@@ -115,7 +118,8 @@ namespace Hilton {
         static bool initialized = false;
 
         if (!initialized) {
-            // Order matters! Button detection has highest priority
+            // Order matters! Scroll wheel is checked first (while scrolling, buttons and movement
+            // are suppressed), then buttons, then movement. The first handler returning true wins.
             chain.addHandler(handleScrollWheel);
             chain.addHandler(handleButtonClick);
             chain.addHandler(handleMouseMovement);
