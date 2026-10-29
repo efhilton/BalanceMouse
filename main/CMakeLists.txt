@@ -1,6 +1,8 @@
 idf_component_register(
         SRCS
+        "src/BootButton.cpp"
         "src/I2cManager.cpp"
+        "src/LedFeedbackTask.cpp"
         "src/Main.cpp"
         "src/MouseEventDetector.cpp"
         "src/Qmi8658C.cpp"
@@ -13,10 +15,9 @@ idf_component_register(
         "driver"
         "esp_timer"
         "nvs_flash"
-        "esp_wifi"
-        "esp_netif"
-        "esp_event"
-        "esp_http_server"
-        "bt"
-        "esp_hid"
+        "mouse"
+        "gestures"
+        "led_feedback"
+        "neopixels"
+        "ble_hid_mouse"
 )

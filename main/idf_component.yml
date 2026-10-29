@@ -9,6 +9,8 @@ dependencies:
     path: ../components/utilities
   filters:
     path: ../components/filters
+  neopixels:
+    path: ../components/neopixels
 
   # # Put list of dependencies here
   # # For components maintained by Espressif:

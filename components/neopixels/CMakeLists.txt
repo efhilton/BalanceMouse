@@ -8,4 +8,6 @@ idf_component_register(
 
         REQUIRES
         "driver"
+        # Public headers (Color.hpp, LightConstants.hpp) include exception headers.
+        "exceptions"
 )

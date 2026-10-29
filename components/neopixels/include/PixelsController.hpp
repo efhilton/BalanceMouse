@@ -4,6 +4,7 @@
 #include <vector>
 #include "led_strip_encoder.h"
 #include <LightConstants.hpp>
+#include <LightPixel.hpp>
 
 namespace Hilton
 {
@@ -66,6 +67,17 @@ namespace Hilton
             // 1,300 ns
             .TREST = 50,
             // 50,000 ns
+        };
+
+        // Timings for the WS2812B used on the Waveshare ESP32-S3-Matrix (datasheet: T0H 0.4us,
+        // T0L 0.85us, T1H 0.8us, T1L 0.45us, reset >= 280us on current silicon revisions).
+        static constexpr led_strip_encoder_config_t WS2812B{
+            .resolution = RMT_LED_STRIP_RESOLUTION_HZ,
+            .T0H = 0.4,
+            .T0L = 0.85,
+            .T1H = 0.8,
+            .T1L = 0.45,
+            .TREST = 300,
         };
 
         static constexpr led_strip_encoder_config_t IN_PI55QATPRPGPBPW_40{
