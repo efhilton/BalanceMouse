@@ -8,10 +8,15 @@ So, this project uses the gyroscope/accelerometer on the device to detect and si
 
 The LED matrix in the device is used to give visual feedback to the user, such as:
 
-1. device is in bluetooth pairing mode (eg. if it has no bluetooth connection)
-2. left click, middle click, right click (fast tilt of the device on the left, forward, or right)
-3. double clicks (double fast clicks to left/forward/right)
-4. scroll wheel up, scroll wheel down (rotate cw/ccw, respectively)
+1. device is in bluetooth pairing mode (eg. if it has no bluetooth connection), and whether pairing succeeded or failed
+2. left click, middle click, right click (fast tilt of the device on the left, forward, or right), and whether a button is being held (drag)
+3. scroll wheel up, scroll wheel down (rotate the board about its vertical axis)
+4. cursor movement (a small "ball" that follows the board's tilt)
+
+Note: the device does **not** detect double clicks. It only reports individual button down/up events; a
+double click is simply two clicks in quick succession, and the host OS decides (using its own double-click
+speed setting) whether they form a double click. Likewise, click vs. drag is decided by the host from how
+long the button stays down and whether the cursor moves meanwhile.
 
 ## Important Links
 
@@ -39,6 +44,10 @@ Typical workflow from the project root:
 
 - Exit monitor with Ctrl+].
 - If you don’t specify -p, ESP-IDF will try to auto-detect.
+
+Building with Docker (no local ESP-IDF install needed), from the repository root:
+
+   docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/project -w /project espressif/idf:v5.5.4 idf.py build
 
 Clean builds:
 - Remove build artifacts entirely (useful if switching targets/IDF versions):
@@ -68,16 +77,82 @@ You can run tests using ESP-IDF’s Unit Test App project and point it to this r
 1) Open an ESP-IDF environment (run export.sh / export.ps1).
 2) Change directory to the Unit Test App provided by ESP-IDF:
    cd "$IDF_PATH/examples/system/unit_test"
-3) Configure CMake to discover this project’s components and select which tests to run by passing these options to idf.py:
-   -D EXTRA_COMPONENT_DIRS="/home/efhilton/CLionProjects/balance_board/components" \
+3) Configure CMake to discover this project’s components and select which tests to run by passing these options to idf.py
+   (BALANCE_BOARD_DIR is the root of this repository; set it before changing directory, e.g. `export BALANCE_BOARD_DIR="$PWD"` from the repo root):
+   -D EXTRA_COMPONENT_DIRS="$BALANCE_BOARD_DIR/components" \
    -D TEST_COMPONENTS="utilities"
 
 Example commands to build, flash, and monitor only the utilities tests on the target:
-   idf.py -D EXTRA_COMPONENT_DIRS="/home/efhilton/CLionProjects/balance_board/components" -D TEST_COMPONENTS="utilities" -p <PORT> flash monitor
+   idf.py -D EXTRA_COMPONENT_DIRS="$BALANCE_BOARD_DIR/components" -D TEST_COMPONENTS="utilities" -p <PORT> flash monitor
 
 To run all tests available to the Unit Test App (including those discovered in this repo via EXTRA_COMPONENT_DIRS):
-   idf.py -D EXTRA_COMPONENT_DIRS="/home/efhilton/CLionProjects/balance_board/components" -D TEST_COMPONENTS=all -p <PORT> flash monitor
+   idf.py -D EXTRA_COMPONENT_DIRS="$BALANCE_BOARD_DIR/components" -D TEST_COMPONENTS=all -p <PORT> flash monitor
 
 Notes:
 - The Unit Test App will build and flash a special test firmware, then run the Unity tests and print results in the serial monitor.
 - After running tests, return to your project directory and do a normal build/flash to restore your regular firmware.
+
+## Running Host Unit Tests (no hardware needed)
+
+The hardware-independent logic (gesture detection, calibration, HID report encoding, the LED renderer,
+the BOOT-button press classifier and the 50% LED intensity ceiling) lives in portable components
+(`components/mouse`, `components/gestures`, `components/led_feedback`) and is unit tested on the host
+(x86/Linux) under `host_test/`, using Unity and AddressSanitizer + UndefinedBehaviorSanitizer.
+
+From the repository root:
+
+   host_test/run_host_tests.sh            # builds and runs inside the espressif/idf Docker image
+   host_test/run_host_tests.sh --local    # uses a local cmake + C++20 compiler instead
+
+## Device Behavior
+
+### Bluetooth (BLE HID mouse)
+
+- BLE-only, using the NimBLE host and ESP-IDF's `esp_hid` HID-over-GATT device profile
+  (`components/ble_hid_mouse`). It shows up as a mouse named **BalanceMouse**.
+- Sends standard 4-byte mouse reports: buttons (bit0 left, bit1 right, bit2 middle), X, Y and wheel
+  (each a signed 8-bit value). One report goes out for every button down/up, every movement sample and
+  every scroll tick, but only while a host is connected and the link is encrypted.
+- Pairing is "Just Works" (there is no display or keypad), with bonding. Bonds are stored in NVS. When no
+  host is connected the board advertises. That is pairing mode if it has no bond, and it is also how an
+  already-bonded computer reconnects by itself after the board reboots.
+- A long press of the BOOT button (see below) forgets the bond and goes back to pairing mode, disconnecting
+  first if a host is connected.
+
+### LED matrix feedback
+
+All LEDs are capped at **50% intensity**. The cap is enforced inside `LightPixel` itself, so no code path can
+exceed it, because the matrix heats up quickly. Coordinates are as seen from the LED side with the USB-C
+connector at the top (see `components/led_feedback/include/MatrixLayout.hpp`).
+
+| State | Display |
+|---|---|
+| Pairing mode / waiting for a host | whole matrix breathes slowly in blue (3 s period) |
+| Pairing succeeded | two quick full-matrix green flashes, then the normal mouse display |
+| Pairing failed | three quick full-matrix red flashes, then back to the blue breathing |
+| Connected, idle or moving | a 2x2 white "ball" that follows the board's tilt (centred at rest) |
+| Scrolling | a column of purple chevrons scrolling continuously in the scroll direction |
+| Left button | far-left column green: solid for a click, blinking once held > 0.5 s (drag) |
+| Right button | far-right column amber: solid for a click, blinking once held > 0.5 s (drag) |
+| Middle button | top row cyan: solid for a click, blinking once held > 0.5 s (drag) |
+
+### Calibration
+
+Two independent baselines are subtracted from the raw readings: one for tilt (accelerometer X/Y, which
+drives the cursor) and one for yaw (which drives the scroll wheel).
+
+- At power-on, the first sample becomes the baseline, so whatever stance the board starts in counts as "zero".
+- After that, each baseline slowly follows the resting position (exponential moving average, 5 s time
+  constant), but **only while completely idle**: no button held, not moving, not scrolling, and both signals
+  below their start thresholds. A held drag or a long scroll is therefore never absorbed into the baseline.
+- A small, steady offset in how you naturally stand (below the start thresholds) is absorbed within about
+  15 s. That keeps the movement and scroll ranges symmetric.
+- A larger permanent change of stance after power-on looks like deliberate movement or scrolling. Press the
+  BOOT button briefly to re-zero.
+
+### BOOT button (GPIO0)
+
+- **Short press** (released before 3 s): immediately re-zeroes both calibration baselines to the current position.
+- **Long press** (held 3 s): fires at the 3 s mark without waiting for release. It forgets the BLE bond
+  and restarts pairing mode, disconnecting the current host first if one is connected.
+- The button is debounced (30 ms) and handled by an any-edge interrupt plus a small task that polls while the button is held.
