@@ -6,3 +6,4 @@
 /test/build/
 /components/*/test/build/
 /components/*/build/
+/build_host_test/
