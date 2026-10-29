@@ -53,7 +53,7 @@ static void test_hard_tilt_moves_cursor_at_full_speed_in_the_same_direction() {
     // never change sign, then saturate at +127.
     for (const float sign: {1.0f, -1.0f}) {
         Rig rig;
-        rig.step(); // seed calibration at level
+        rig.boot(); // seed calibration at level
         int previous = 0;
         for (float a = 0.0f; a <= 19.6f; a += 0.2f) {
             rig.ax = sign * a;
@@ -76,14 +76,14 @@ static void test_hard_tilt_moves_cursor_at_full_speed_in_the_same_direction() {
 static void test_hard_yaw_scrolls_in_the_same_direction() {
     // 90 degrees of yaw * 127/60 = 190 report units -> used to wrap negative. Now saturates.
     Rig rig;
-    rig.step();
+    rig.boot();
     rig.yaw = 90.0f;
     rig.run(1000);
     TEST_ASSERT_EQUAL_INT(127, rig.mouse.getAngle());
     TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.scrollTotal());
 
     Rig neg;
-    neg.step();
+    neg.boot();
     neg.yaw = -90.0f;
     neg.run(1000);
     TEST_ASSERT_EQUAL_INT(-127, neg.mouse.getAngle());

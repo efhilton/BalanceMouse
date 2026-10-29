@@ -34,9 +34,16 @@ namespace Hilton {
         static constexpr auto TAG{"MOUSE_EVENT_DETECTOR"};
 
     private:
+        /** Boot-time log of the calibration warm-up samples and the seeded baseline. */
+        void logCalibrationWarmup(const MotionSample &sample);
+
+        static constexpr int MAX_WARMUP_SAMPLES_LOGGED{Calibration::DEFAULT_WARMUP_SAMPLES + 5};
+
         Mouse &mouse;
         FeedbackState *feedback;
         Calibration calibration;
         GestureDetector detector;
+        int warmupSamplesLogged{0};
+        bool seedLogged{false};
     };
 }

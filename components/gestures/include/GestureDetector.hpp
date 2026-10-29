@@ -46,7 +46,8 @@ namespace Hilton {
         /**
          * Process one sample. Returns true when one of the handlers (scroll,
          * button, movement) reported activity -- the same meaning as the old
-         * ChainOfResponsibility result.
+         * ChainOfResponsibility result. Always false (and nothing is emitted)
+         * until the calibration is seeded after its start-up warm-up.
          */
         bool process(const MotionSample &sample);
 

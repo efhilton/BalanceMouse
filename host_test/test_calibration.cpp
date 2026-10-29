@@ -1,11 +1,13 @@
 // Calibration: two independent, idle-only, slowly adapting baselines (tilt and yaw),
-// boot-time seeding, immediate re-zero, non-level resting stance, and the negative cases
+// boot-time seeding (after a warm-up, never from degenerate post-reset samples -- #1181),
+// immediate re-zero, non-level resting stance, and the negative cases
 // (held drag / sustained scroll / sustained movement must NOT be absorbed).
 #include "test_support.hpp"
 
 #include <ButtonPressDetector.hpp>
 #include <Calibration.hpp>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <unity.h>
 
@@ -28,11 +30,26 @@ static MotionSample sampleOf(const float ax, const float ay, const float yaw, co
 
 // ---------------- Calibration class on its own ----------------
 
-static void test_first_sample_seeds_both_baselines() {
+/** Feed the warm-up plus one seeding sample, i.e. "power on in this state". */
+static void seed(Calibration &c, const MotionSample &s) {
+    for (int i = 0; i <= Calibration::DEFAULT_WARMUP_SAMPLES; ++i) c.observe(s);
+    TEST_ASSERT_TRUE(c.isSeeded());
+}
+
+static void test_seeds_both_baselines_after_warmup() {
     Calibration c;
     TEST_ASSERT_FALSE(c.isSeeded());
+    for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES; ++i) {
+        c.observe(sampleOf(1.5f, -2.0f, 33.0f));
+        TEST_ASSERT_FALSE(c.isSeeded());
+        // Not seeded yet: calibrated output is held at zero, never "raw minus a zero baseline".
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltX());
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltY());
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedYaw());
+    }
     c.observe(sampleOf(1.5f, -2.0f, 33.0f));
     TEST_ASSERT_TRUE(c.isSeeded());
+    TEST_ASSERT_EQUAL_INT(Calibration::DEFAULT_WARMUP_SAMPLES, c.samplesRejectedBeforeSeed());
     TEST_ASSERT_EQUAL_FLOAT(1.5f, c.tiltBaselineX());
     TEST_ASSERT_EQUAL_FLOAT(-2.0f, c.tiltBaselineY());
     TEST_ASSERT_EQUAL_FLOAT(33.0f, c.yawBaseline());
@@ -42,7 +59,7 @@ static void test_first_sample_seeds_both_baselines() {
 
 static void test_adapts_only_when_idle() {
     Calibration c;
-    c.observe(sampleOf(0, 0, 0));
+    seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(1.0f, 1.0f, 10.0f));
     for (int i = 0; i < 1000; ++i) c.adapt(0.02f, false);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tiltBaselineX());
@@ -56,7 +73,7 @@ static void test_adapts_only_when_idle() {
 static void test_time_constant_is_slow_and_exponential() {
     // tau = 5 s: after exactly one tau the baseline covers 1 - 1/e (63.2%) of a step.
     Calibration c(5.0f, 5.0f);
-    c.observe(sampleOf(0, 0, 0));
+    seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(1.0f, 0, 10.0f));
     for (int i = 0; i < 250; ++i) c.adapt(0.02f, true); // 5 s at 50 Hz
     TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.632f, c.tiltBaselineX());
@@ -71,7 +88,7 @@ static void test_time_constant_is_slow_and_exponential() {
 static void test_tilt_and_yaw_baselines_are_independent() {
     // Different time constants prove they are separate filters, not one shared baseline.
     Calibration c(1.0f, 100.0f);
-    c.observe(sampleOf(0, 0, 0));
+    seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(1.0f, -1.0f, 10.0f));
     for (int i = 0; i < 250; ++i) c.adapt(0.02f, true); // 5 s
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, c.tiltBaselineX()); // 5 tau -> ~99.3%
@@ -80,7 +97,7 @@ static void test_tilt_and_yaw_baselines_are_independent() {
 
     // A yaw-only offset leaves the tilt baseline exactly where it was, and vice versa.
     Calibration d;
-    d.observe(sampleOf(0.2f, 0.3f, 0));
+    seed(d, sampleOf(0.2f, 0.3f, 0));
     d.observe(sampleOf(0.2f, 0.3f, 12.0f));
     for (int i = 0; i < 500; ++i) d.adapt(0.02f, true);
     TEST_ASSERT_EQUAL_FLOAT(0.2f, d.tiltBaselineX());
@@ -90,7 +107,7 @@ static void test_tilt_and_yaw_baselines_are_independent() {
 
 static void test_rezero_is_immediate() {
     Calibration c;
-    c.observe(sampleOf(0, 0, 0));
+    seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(2.5f, -1.25f, -40.0f));
     c.rezero();
     TEST_ASSERT_EQUAL_FLOAT(2.5f, c.tiltBaselineX());
@@ -104,7 +121,7 @@ static void test_rezero_is_immediate() {
 
 static void test_short_press_rezero_through_detector_stops_movement_and_scroll_immediately() {
     Rig rig;
-    rig.step(); // seed level
+    rig.boot(); // seed level
     rig.ax = 4.0f;
     rig.run(200);
     TEST_ASSERT_TRUE(rig.mouse.isMoving());
@@ -297,10 +314,151 @@ static void test_idle_between_gestures_resumes_adaptation() {
     TEST_ASSERT_TRUE(rig.calibration.tiltBaselineX() > 0.25f); // now idle -> adapting toward 0.5
 }
 
+
+// ---------------- Regression (#1181): degenerate post-reset samples must not seed ----------------
+
+// The real resting reading from the first hardware bring-up: AX=0x05C3, AY=0xF2FB at +/-2 g,
+// converted exactly like Qmi8658C::populateRawAccelerometer (scale, then sign flip).
+static constexpr float QMI_ACCEL_SCALE{2.0f * 9.81f / 32768.0f};
+static constexpr float HW_REST_X{-static_cast<float>(static_cast<int16_t>(0x05C3)) * QMI_ACCEL_SCALE}; // -0.88 m/s^2
+static constexpr float HW_REST_Y{-static_cast<float>(static_cast<int16_t>(0xF2FB)) * QMI_ACCEL_SCALE}; // +1.99 m/s^2
+static const float HW_REST_Z{std::sqrt(9.81f * 9.81f - HW_REST_X * HW_REST_X - HW_REST_Y * HW_REST_Y)};
+// The QMI8658 "0x84 in every data byte" garbage pattern the driver warns about, after the sign flip.
+static constexpr float QMI_0x84_PATTERN{-static_cast<float>(static_cast<int16_t>(0x8484)) * QMI_ACCEL_SCALE}; // +18.9
+
+static void test_zero_startup_samples_are_never_used_as_the_baseline() {
+    // Exactly the hardware failure: data registers still at their reset value (all zero) for
+    // MORE samples than the fixed warm-up, then real resting data. The zero samples must be
+    // rejected (implausible gravity) and the seed must be the first real resting reading.
+    Calibration c;
+    constexpr int ZERO_SAMPLES{Calibration::DEFAULT_WARMUP_SAMPLES + 15};
+    for (int i = 0; i < ZERO_SAMPLES; ++i) {
+        MotionSample zero{};
+        c.observe(zero);
+        TEST_ASSERT_FALSE(c.isSeeded());
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltX());
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltY());
+    }
+    MotionSample rest{};
+    rest.accel = {HW_REST_X, HW_REST_Y, HW_REST_Z};
+    rest.yaw = 0.4f;
+    c.observe(rest);
+    TEST_ASSERT_TRUE(c.isSeeded());
+    TEST_ASSERT_EQUAL_INT(ZERO_SAMPLES, c.samplesRejectedBeforeSeed());
+    TEST_ASSERT_EQUAL_FLOAT(HW_REST_X, c.tiltBaselineX());
+    TEST_ASSERT_EQUAL_FLOAT(HW_REST_Y, c.tiltBaselineY());
+    TEST_ASSERT_EQUAL_FLOAT(0.4f, c.yawBaseline());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltX());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltY());
+}
+
+static void test_plausible_resting_sample_window() {
+    MotionSample s{};
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s)); // all-zero reset value
+    s.accel = {HW_REST_X, HW_REST_Y, HW_REST_Z};
+    TEST_ASSERT_TRUE(Calibration::isPlausibleRestingSample(s));
+    s.accel = {0, 0, 9.81f};
+    TEST_ASSERT_TRUE(Calibration::isPlausibleRestingSample(s));
+    s.accel = {QMI_0x84_PATTERN, QMI_0x84_PATTERN, QMI_0x84_PATTERN}; // ~3.3 g
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+    s.accel = {0, 0, 0.4f * 9.81f};
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+    s.accel = {0, 0, 1.6f * 9.81f};
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+    s.accel = {std::nanf(""), 0, 9.81f};
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+    s.accel = {0, 0, 9.81f};
+    s.yaw = std::nanf("");
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+}
+
+/**
+ * End to end through GestureDetector, reproducing the bring-up bug: the board rests untouched
+ * at its real (non-level) tilt, but the IMU's first post-reset samples read garbage -- zeros,
+ * then the 0x84 pattern -- for longer than the warm-up. With first-sample seeding the zero
+ * sample became the baseline and the real rest read as a (-11, +25) lean forever: hypot ~28
+ * report units, above the start threshold (13), so it never counted as idle and was never
+ * adapted away. Now: no output at all during the garbage, the baseline is the real resting
+ * reading, the board is idle, and it stays silent for a long untouched soak.
+ */
+static void test_garbage_startup_samples_then_real_rest_produces_no_phantom_movement() {
+    Rig rig;
+    // Phase 1: registers still at their reset value.
+    rig.ax = 0;
+    rig.ay = 0;
+    rig.az = 0;
+    for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES + 5; ++i) {
+        TEST_ASSERT_FALSE(rig.step());
+    }
+    // Phase 2: a burst of the 0x84 garbage pattern.
+    rig.ax = rig.ay = rig.az = QMI_0x84_PATTERN;
+    for (int i = 0; i < 5; ++i) {
+        TEST_ASSERT_FALSE(rig.step());
+    }
+    TEST_ASSERT_FALSE(rig.calibration.isSeeded());
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size())); // nothing emitted from garbage
+
+    // Phase 3: real resting data (with a little sensor noise), board untouched, 60 s.
+    uint32_t noise = 777;
+    auto jitter = [&noise](const float amplitude) {
+        noise = noise * 1103515245u + 12345u;
+        return amplitude * (static_cast<float>((noise >> 16) & 0x7FFF) / 16383.5f - 1.0f);
+    };
+    for (int i = 0; i < 3000; ++i) {
+        rig.ax = HW_REST_X + jitter(0.03f);
+        rig.ay = HW_REST_Y + jitter(0.03f);
+        rig.az = HW_REST_Z + jitter(0.03f);
+        rig.step();
+        TEST_ASSERT_TRUE(rig.calibration.isSeeded());
+        TEST_ASSERT_TRUE_MESSAGE(rig.detector.wasIdle(), "untouched board at its real rest must count as idle");
+    }
+    TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Move));
+    TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Scroll));
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size()));
+    TEST_ASSERT_FALSE(rig.mouse.isMoving());
+
+    // Baseline is the real resting reading, not the zero / 0x84 transients.
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, HW_REST_X, rig.calibration.tiltBaselineX());
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, HW_REST_Y, rig.calibration.tiltBaselineY());
+    // Idle mouse output has converged to ~zero (well under one report unit = 0.077 m/s^2).
+    rig.ax = HW_REST_X;
+    rig.ay = HW_REST_Y;
+    rig.az = HW_REST_Z;
+    rig.run(10000);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, rig.detector.getCalibratedTiltX());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, rig.detector.getCalibratedTiltY());
+    TEST_ASSERT_EQUAL_INT(0, rig.mouse.getMovement().deltaX);
+    TEST_ASSERT_EQUAL_INT(0, rig.mouse.getMovement().deltaY);
+
+    // And the board still works as a mouse around that rest point.
+    rig.ax = HW_REST_X + 2.0f;
+    rig.run(200);
+    TEST_ASSERT_TRUE(rig.mouse.isMoving());
+    TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.count(RecordedEvent::Type::Move));
+}
+
+static void test_rezero_during_warmup_does_not_seed_from_garbage() {
+    // A BOOT short press while the IMU is still producing zeros must not snap the baseline to them.
+    Rig rig;
+    rig.ax = rig.ay = rig.az = 0;
+    rig.step();
+    rig.detector.requestRezero();
+    rig.run(400); // 20 zero samples (> warm-up), request consumed meanwhile
+    TEST_ASSERT_FALSE(rig.calibration.isSeeded());
+    rig.ax = HW_REST_X;
+    rig.ay = HW_REST_Y;
+    rig.az = HW_REST_Z;
+    rig.run(2000);
+    TEST_ASSERT_TRUE(rig.calibration.isSeeded());
+    TEST_ASSERT_EQUAL_FLOAT(HW_REST_X, rig.calibration.tiltBaselineX());
+    TEST_ASSERT_EQUAL_FLOAT(HW_REST_Y, rig.calibration.tiltBaselineY());
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size()));
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0); // keep Unity output even if a sanitizer aborts the run
     UNITY_BEGIN();
-    RUN_TEST(test_first_sample_seeds_both_baselines);
+    RUN_TEST(test_seeds_both_baselines_after_warmup);
     RUN_TEST(test_adapts_only_when_idle);
     RUN_TEST(test_time_constant_is_slow_and_exponential);
     RUN_TEST(test_tilt_and_yaw_baselines_are_independent);
@@ -312,5 +470,9 @@ int main() {
     RUN_TEST(test_sustained_scroll_is_not_absorbed);
     RUN_TEST(test_sustained_movement_is_not_absorbed);
     RUN_TEST(test_idle_between_gestures_resumes_adaptation);
+    RUN_TEST(test_zero_startup_samples_are_never_used_as_the_baseline);
+    RUN_TEST(test_plausible_resting_sample_window);
+    RUN_TEST(test_garbage_startup_samples_then_real_rest_produces_no_phantom_movement);
+    RUN_TEST(test_rezero_during_warmup_does_not_seed_from_garbage);
     return UNITY_END();
 }

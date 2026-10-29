@@ -149,6 +149,13 @@ namespace Hilton {
             calibration.rezero();
         }
 
+        // Until the baselines are seeded from a real resting reading (start-up warm-up,
+        // see Calibration), emit nothing: no movement, scroll or clicks from transients.
+        if (!calibration.isSeeded()) {
+            lastIdle = false;
+            return false;
+        }
+
         const float tiltX = calibration.calibratedTiltX();
         const float tiltY = calibration.calibratedTiltY();
         const float yaw = calibration.calibratedYaw();

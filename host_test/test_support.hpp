@@ -83,6 +83,14 @@ namespace TestSupport {
             return handled;
         }
 
+        /**
+         * Feed the calibration warm-up plus the seeding sample at the current state, so the
+         * baselines are seeded from it (the "power on here" step for tests).
+         */
+        void boot() {
+            for (int i = 0; i <= Hilton::Calibration::DEFAULT_WARMUP_SAMPLES; ++i) step();
+        }
+
         void run(const uint32_t durationMs) {
             for (uint32_t t = 0; t < durationMs; t += PERIOD_MS) step();
         }

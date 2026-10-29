@@ -141,7 +141,11 @@ connector at the top (see `components/led_feedback/include/MatrixLayout.hpp`).
 Two independent baselines are subtracted from the raw readings: one for tilt (accelerometer X/Y, which
 drives the cursor) and one for yaw (which drives the scroll wheel).
 
-- At power-on, the first sample becomes the baseline, so whatever stance the board starts in counts as "zero".
+- At power-on, the stance the board starts in counts as "zero". The baseline is not taken from the very first
+  sample: right after the IMU is reset its data registers can still read all-zero, which would make the board's
+  real resting tilt look like a permanent lean (phantom cursor drift). The first 10 samples (~200 ms) are
+  discarded, then the baseline is seeded from the first sample whose total acceleration is a plausible resting
+  reading (0.5 g to 1.5 g). Nothing is sent to the host until then.
 - After that, each baseline slowly follows the resting position (exponential moving average, 5 s time
   constant), but **only while completely idle**: no button held, not moving, not scrolling, and both signals
   below their start thresholds. A held drag or a long scroll is therefore never absorbed into the baseline.
