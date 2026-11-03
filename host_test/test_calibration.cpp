@@ -129,6 +129,43 @@ static void test_tilt_idle_and_yaw_idle_flags_are_independently_honoured() {
     TEST_ASSERT_EQUAL_FLOAT(yawBefore, c.yawBaseline());
 }
 
+/**
+ * Edgar (#1181, 2026-11-02): "within 10 seconds, that direction becomes our new zero." With the
+ * DEFAULT yaw time constant (3 s), an idle yaw step must be >= 95% absorbed after 10 s
+ * (1 - e^(-10/3) ~= 96.4%), and not yet before ~9 s (3*tau = 95% at 9 s) -- i.e. it is the time
+ * constant doing this, not some faster snap. Tilt keeps its own, unchanged 5 s constant.
+ */
+static void test_default_yaw_ema_converges_within_10_seconds_while_idle() {
+    Calibration c;
+    seed(c, sampleOf(0, 0, 0));
+    c.observe(sampleOf(1.0f, 0, 8.0f));
+    for (int i = 0; i < 400; ++i) c.adapt(0.02f, true, true); // 8 s at 50 Hz
+    TEST_ASSERT_TRUE_MESSAGE(c.yawBaseline() < 0.95f * 8.0f, "8 s: should not be 95% converged yet");
+    for (int i = 0; i < 100; ++i) c.adapt(0.02f, true, true); // -> 10 s
+    TEST_ASSERT_TRUE_MESSAGE(c.yawBaseline() >= 0.95f * 8.0f, "10 s: yaw must be >= 95% converged");
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 8.0f * (1.0f - std::exp(-10.0f / 3.0f)), c.yawBaseline());
+    // Tilt is on the unchanged 5 s constant: 1 - e^-2 ~= 86.5% at 10 s.
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, 1.0f - std::exp(-2.0f), c.tiltBaselineX());
+}
+
+/**
+ * Same requirement end-to-end through GestureDetector's real yawIdle gating: the board turned to
+ * a new heading below the scroll start threshold (8 deg = 12.7 units < 15) and left alone. Within
+ * 10 s that heading is the new zero, with no scroll emitted along the way.
+ */
+static void test_new_heading_becomes_zero_within_10_seconds_through_detector() {
+    Rig rig;
+    rig.boot();
+    constexpr float NEW_HEADING{8.0f};
+    rig.yaw = NEW_HEADING;
+    rig.run(10000);
+    TEST_ASSERT_FALSE(rig.mouse.isScrollWheelActive());
+    TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Scroll));
+    TEST_ASSERT_TRUE_MESSAGE(rig.calibration.yawBaseline() >= 0.95f * NEW_HEADING,
+                             "yaw baseline must be >= 95% of the new heading after 10 s idle");
+    TEST_ASSERT_TRUE(std::abs(rig.detector.getCalibratedYaw()) <= 0.05f * NEW_HEADING);
+}
+
 static void test_tilt_and_yaw_baselines_are_independent() {
     // Different time constants prove they are separate filters, not one shared baseline.
     Calibration c(1.0f, 100.0f);
@@ -224,7 +261,7 @@ static void test_non_level_resting_stance_converges_and_centres_output() {
     Rig rig;
     rig.boot(); // boot level, seeded at 0
 
-    constexpr float REST_X{0.70f}; // 0.70*12.96 = 9.1 units  (start threshold 13)
+    constexpr float REST_X{0.70f}; // 0.70*12.96 = 9.1 units  (TILT_IDLE_MAGNITUDE_THRESHOLD 13)
     constexpr float REST_Y{-0.60f}; // |(9.1, -7.8)| = 12.0 units -> still below 13
     constexpr float REST_YAW{6.0f}; // 6*127/80 = 9.5 units (start threshold 15, #1181)
     uint32_t noise = 12345;
@@ -627,7 +664,7 @@ static void test_garbage_startup_samples_then_real_rest_produces_no_phantom_move
  * window and fast enough to be a useful recovery (see Calibration::adapt()'s doc comment). It
  * is a one-time, decisive snap (Calibration::snapYawToRaw()) fired once "wheel active, nothing
  * else going on, gyro quiet" has persisted continuously for longer than
- * GestureDetector::STUCK_SCROLL_RECOVERY_S (60 s) -- see its own doc comment. This reproduces
+ * GestureDetector::STUCK_SCROLL_RECOVERY_S (30 s) -- see its own doc comment. This reproduces
  * the drift-into-saturation scenario directly (not via real integration, which isn't modelled
  * here -- `rig.yaw` is just set to a drifted value, the same as if gyro integration had
  * produced it), proves NOTHING changes right up to the timeout (still fully stuck just under it,
@@ -645,16 +682,16 @@ static void test_yaw_baseline_self_corrects_drift_even_while_scroll_latched_acti
     rig.step();
     TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), "drifted yaw should have engaged the scroll wheel");
 
-    // Comfortably under the recovery timeout (60 s): still fully stuck, baseline untouched --
-    // same "never absorbed" guarantee as a real sustained scroll. Stops at 50 s, not right at
-    // the 60 s edge, to leave headroom for float accumulation error in the running dt sum (the
+    // Comfortably under the recovery timeout (30 s): still fully stuck, baseline untouched --
+    // same "never absorbed" guarantee as a real sustained scroll. Stops at 25 s, not right at
+    // the 30 s edge, to leave headroom for float accumulation error in the running dt sum (the
     // exact crossing step is not the point under test -- that it hasn't moved AT ALL well
     // before the timeout is).
-    for (int i = 0; i < 2499; ++i) rig.step(); // ~50 s more
+    for (int i = 0; i < 1249; ++i) rig.step(); // ~25 s more
     TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), "must still be stuck well under the recovery timeout");
     TEST_ASSERT_EQUAL_FLOAT(0.0f, rig.calibration.yawBaseline());
 
-    // Cross the timeout (another 12 s, well past the 60 s mark with margin): the snap fires,
+    // Cross the timeout (another 12 s, well past the 30 s mark with margin): the snap fires,
     // and the Schmitt trigger disengages (calibratedYaw ~0) on the step after that.
     for (int i = 0; i < 600; ++i) rig.step();
 
@@ -785,13 +822,20 @@ static void test_scroll_toggle_is_repeatable_with_negative_gyro_bias() {
     run_repeatable_scroll_cycles_with_gyro_bias(-0.55f);
 }
 
-/** A long engaged scroll must not accumulate the gyro bias (baseline is frozen while scrolling). */
+/**
+ * A long engaged scroll must not accumulate the gyro bias (baseline is frozen while scrolling).
+ * Held 20 s (was 30 s): the bias (0.55 dps) is below the stuck-scroll "gyro quiet" gate, so a
+ * hold at/over GestureDetector::STUCK_SCROLL_RECOVERY_S (now 30 s, #1181) is by design snapped
+ * by the recovery timeout -- that is a different behaviour, not what this test is about. 20 s
+ * matches test_sustained_scroll_is_not_absorbed and would still show ~11 deg of accumulated
+ * bias if the baseline were not frozen, far outside the 0.3 deg tolerance below.
+ */
 static void test_long_scroll_hold_does_not_accumulate_gyro_bias() {
     Rig rig;
     DriftingBoard board{rig, 0.55f};
     board.boot();
     board.twistTo(-12.0f);
-    board.hold(30000);
+    board.hold(20000);
     TEST_ASSERT_TRUE(rig.mouse.isScrollWheelActive());
     TEST_ASSERT_FLOAT_WITHIN(0.3f, -12.0f, rig.detector.getCalibratedYaw());
     board.twistTo(0.0f);
@@ -819,6 +863,8 @@ int main() {
     RUN_TEST(test_adapts_only_when_idle);
     RUN_TEST(test_tilt_idle_and_yaw_idle_flags_are_independently_honoured);
     RUN_TEST(test_time_constant_is_slow_and_exponential);
+    RUN_TEST(test_default_yaw_ema_converges_within_10_seconds_while_idle);
+    RUN_TEST(test_new_heading_becomes_zero_within_10_seconds_through_detector);
     RUN_TEST(test_tilt_and_yaw_baselines_are_independent);
     RUN_TEST(test_rezero_is_immediate);
     RUN_TEST(test_short_press_rezero_through_detector_stops_movement_and_scroll_immediately);

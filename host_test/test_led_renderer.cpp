@@ -1,6 +1,6 @@
 // LED feedback: the PURE renderer (state + time -> 64 pixels), the matrix mapping, the
 // FeedbackState tracker, and -- most importantly -- the intensity ceiling everywhere
-// (Lights::MAX_INTENSITY_PERCENT; lowered 50% -> 25% in #1181 after a real-hardware heat finding).
+// (Lights::MAX_INTENSITY_PERCENT; lowered 50% -> 25% -> 12% in #1181 after two real-hardware heat findings).
 #include <FeedbackRenderer.hpp>
 #include <FeedbackState.hpp>
 #include <LightPixel.hpp>
@@ -382,8 +382,12 @@ static void test_pairing_pulse_breathes_blue_over_whole_matrix() {
         int prev = -1;
         for (uint32_t t = 0; t < 2 * R::PULSE_PERIOD_MS; t += 40) { // 25 Hz, like the LED task
             const Frame f = renderChecked(s, t);
-            TEST_ASSERT_TRUE(allAre(f, R::PULSE_BLUE));
+            // PULSE_MIN_INTENSITY is 0 since the second heat halving (2026-11-02, #1181), so the
+            // breath legitimately bottoms out dark: every pixel must still carry the pulse colour,
+            // and be lit whenever the pulse intensity is above zero.
+            for (const auto &p: f.raw()) TEST_ASSERT_TRUE(isColor(p, R::PULSE_BLUE));
             const int i = f.at(0, 0).intensity;
+            if (i > 0) TEST_ASSERT_TRUE(allAre(f, R::PULSE_BLUE));
             for (const auto &p: f.raw()) TEST_ASSERT_EQUAL_INT(i, p.intensity); // uniform
             if (prev >= 0) TEST_ASSERT_TRUE(std::abs(i - prev) <= 2); // smooth, no jumps
             prev = i;
@@ -524,7 +528,8 @@ static void test_feedback_state_tracks_events_and_new_pairing_outcomes() {
 
 // ---------------- THE INTENSITY CEILING ----------------
 // Lowered 50% -> 25% in #1181 after Edgar's real-hardware pass found the unit running warmer
-// than it should even while already compliant with the old 50% ceiling.
+// than it should even while already compliant with the old 50% ceiling, then 25% -> 12% on
+// 2026-11-02 after a second heat complaint.
 
 static void test_light_pixel_clamps_intensity_at_the_source() {
     constexpr uint8_t CEIL = Lights::MAX_INTENSITY_PERCENT;

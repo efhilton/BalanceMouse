@@ -19,8 +19,30 @@ namespace Hilton {
                || mouse.isButtonPressed(Button::Middle);
     }
 
+    /*
+     * DELIBERATE, DATA-DRIVEN DECISION -- do NOT re-add `|| mouse.isMoving()` to the bail-out
+     * below (#1181, Edgar, 2026-11-02: "scroll won't engage, the cursor moves instead").
+     *
+     * This function used to bail out while the cursor was moving. Live ON-state captures from the
+     * real board showed that twisting it around Z (the scroll gesture) also tips it sideways by
+     * 10-15 deg. While scroll was actively engaged, side tilt on the linear GRAVITY_SCALE metric
+     * had a median of 24.6 and a 90th percentile of 38.7. In 87% of those samples it was above the
+     * old pre-shrink movement-start magnitude (13). That side tilt reached the movement
+     * hysteresis first, latched mouse.isMoving(), and the old check then blocked scroll. So scroll
+     * lost to movement even though it is dispatched FIRST in process() (scroll, clicks, movement).
+     * No tilt-magnitude threshold can fix this: the incidental tilt that comes with a Z-twist is
+     * usually LARGER than a deliberate cursor tilt, so the two cannot be told apart by size.
+     *
+     * The reverse risk is low. Tilting in X/Y to move the cursor does not spin the board around
+     * Z, so a deliberate cursor move being taken over by an incidental yaw blip is far less likely
+     * than the failure that was reported. Removing the check makes the existing priority order
+     * hold in practice. Buttons still block scroll (a held button means a drag).
+     *
+     * Unchanged: while scroll is active, movement output stays fully suppressed (process() skips
+     * handleMouseMovement when handled is true, and handleMouseMovement also bails out itself).
+     */
     bool GestureDetector::handleScrollWheel(const float calibratedYaw, const float dtSeconds) {
-        if (anyButtonPressed() || mouse.isMoving()) {
+        if (anyButtonPressed()) {
             scrollAccumulator = 0;
             return false;
         }
@@ -37,6 +59,14 @@ namespace Hilton {
             scrollAccumulator = 0;
             return false;
         }
+
+        // Scroll can now engage while the movement hysteresis is latched on (see the doc comment
+        // above). handleMouseMovement is skipped for as long as scroll is active, so nothing else
+        // would ever clear that latch. A stale isMoving() would block the stuck-scroll recovery
+        // (stuckAndQuiet in process()) and the yaw idle gate. Feeding a zero delta releases it
+        // (0 < MOVEMENT_THRESHOLD_STOP) and zeroes the stored deltas. After scroll disengages,
+        // movement restarts from rest and must cross MOVEMENT_THRESHOLD_START again.
+        mouse.updateMovement(0, 0);
 
         // Convert the deflection into a wheel-tick rate and emit whole ticks.
         scrollAccumulator += static_cast<float>(mouse.getAngle()) * SCROLL_TICKS_PER_SECOND_PER_UNIT * dtSeconds;
@@ -116,8 +146,11 @@ namespace Hilton {
         if (n > 1.0f) {
             n = 1.0f;
         }
-        // Magnitude only (always >= 0), so the power can never flip or drop the sign.
-        const float magnitude = std::round(std::pow(n, MOVEMENT_ACCEL_EXPONENT) * Mouse::REPORT_MAX);
+        // Magnitude only (always >= 0), so the power can never flip or drop the sign. The speed
+        // scale is a positive scalar applied BEFORE rounding, so it can't flip the sign either and
+        // low magnitudes still round to the nearest integer rather than being truncated.
+        const float magnitude = std::round(std::pow(n, MOVEMENT_ACCEL_EXPONENT)
+                                           * Mouse::REPORT_MAX * MOVEMENT_SPEED_SCALE);
         return Mouse::saturateToReport(tilt < 0.0f ? -magnitude : magnitude);
     }
 
@@ -211,12 +244,14 @@ namespace Hilton {
         // thresholds. Unchanged from the original code (now just two independently-computed
         // flags instead of one shared bool -- see Calibration::adapt()'s doc comment).
         // Deliberately still the LINEAR GRAVITY_SCALE magnitude, not the HID acceleration curve
-        // (movementDeltaFromTilt): idle detection semantics are independent of cursor feel.
+        // (movementDeltaFromTilt): idle detection semantics are independent of cursor feel. For the
+        // same reason the tilt gate uses its own TILT_IDLE_MAGNITUDE_THRESHOLD, not the HID cursor
+        // hysteresis Mouse::MOVEMENT_THRESHOLD_START (decoupled in #1181; see the constant's doc).
         const float tiltUnits = std::hypot(GRAVITY_SCALE * tiltX, GRAVITY_SCALE * tiltY);
         const float yawUnits = std::abs(SCROLL_SCALE * yaw);
         const bool tiltIdle = !anyButtonPressed()
                               && !mouse.isScrollWheelActive()
-                              && tiltUnits < static_cast<float>(Mouse::MOVEMENT_THRESHOLD_START);
+                              && tiltUnits < TILT_IDLE_MAGNITUDE_THRESHOLD;
         const bool yawIdle = !anyButtonPressed()
                              && !mouse.isMoving()
                              && !mouse.isScrollWheelActive()

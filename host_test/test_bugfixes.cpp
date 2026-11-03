@@ -50,7 +50,9 @@ static void test_saturate_past_overflow_point_clamps_instead_of_wrapping() {
 static void test_hard_tilt_moves_cursor_at_full_speed_in_the_same_direction() {
     // Sweep accel X from 0 up to the sensor's +/-2G full scale (19.6 m/s^2), crossing the old
     // overflow point (127 / (127/9.8) = 9.8 m/s^2). dx must be monotonic non-decreasing and
-    // never change sign, then saturate at +127.
+    // never change sign, then saturate at the movement curve's ceiling: round(127 *
+    // MOVEMENT_SPEED_SCALE 0.5) = 64 (halved per Edgar's "crazy fast" feedback). The int8
+    // wrap-around guard itself (Mouse::saturateToReport, +/-127) is pinned separately above.
     for (const float sign: {1.0f, -1.0f}) {
         Rig rig;
         rig.boot(); // seed calibration at level
@@ -69,7 +71,7 @@ static void test_hard_tilt_moves_cursor_at_full_speed_in_the_same_direction() {
                 previous = dx;
             }
         }
-        TEST_ASSERT_EQUAL_INT(sign > 0 ? 127 : -127, previous);
+        TEST_ASSERT_EQUAL_INT(sign > 0 ? 64 : -64, previous);
     }
 }
 

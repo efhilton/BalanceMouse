@@ -32,6 +32,17 @@ namespace Hilton {
          * magnitude gate in process() so calibration idle detection behaves exactly as before.
          */
         static constexpr float GRAVITY_SCALE{127.0f / 9.8f};
+        /**
+         * Calibration idle/adapt gate for tilt: the tilt baselines may only adapt while
+         * hypot(GRAVITY_SCALE * tiltX, GRAVITY_SCALE * tiltY) is below this (linear units,
+         * 13 / (127/9.8) = ~1.0 m/s^2, ~5.9 deg). This value used to be shared, by coincidence,
+         * with Mouse::MOVEMENT_THRESHOLD_START (both 13). That constant is the HID cursor's
+         * start hysteresis and has been retuned (#1181, Edgar: XY deadzone too large) for the
+         * scaled acceleration curve; idle detection is a separate concern and must not change
+         * with cursor feel, so it now has its own constant, kept at the old value (13) so
+         * idle-detection behaviour is bit-for-bit unchanged.
+         */
+        static constexpr float TILT_IDLE_MAGNITUDE_THRESHOLD{13.0f};
 
         /**
          * HID movement acceleration curve (#1181, Edgar: "the further we are away from the
@@ -41,7 +52,8 @@ namespace Hilton {
          * Affects ONLY the HID movement deltas: the LED ball (a position indicator), the scroll
          * wheel and the idle/adapt gate are all unaffected. See movementDeltaFromTilt().
          *
-         * Tilt angle (degrees) at which the cursor reaches full speed (report 127). Reuses the
+         * Tilt angle (degrees) at which the cursor reaches full speed (report
+         * round(127 * MOVEMENT_SPEED_SCALE) = 64 with the current 0.5 scale). Reuses the
          * device's established "full tilt" angle, FeedbackRenderer::BALL_FULL_SCALE_TILT_DEG
          * (the LED ball reaches the matrix edge at the same tilt), so ball-at-edge and
          * cursor-at-full-speed coincide. Duplicated rather than shared because led_feedback
@@ -63,11 +75,24 @@ namespace Hilton {
          * call, tune by feel.
          */
         static constexpr float MOVEMENT_ACCEL_EXPONENT{2.0f};
+        /**
+         * Uniform output scale applied to the HID movement curve, AFTER the curve shape (exponent
+         * and full-scale angle, both unchanged) and BEFORE rounding. Edgar's real-hardware feedback
+         * on the first curve (full speed = 127): "for X and Y, please half the acceleration. It's
+         * crazy fast." -> 0.5, i.e. the same quadratic ramp, half the speed at every tilt; full
+         * tilt (20 deg) now gives +/-64 instead of +/-127. Tunable further if he wants more or less
+         * than exactly half. Note the Mouse start/stop hysteresis (Mouse::MOVEMENT_THRESHOLD_START/
+         * STOP) is applied to the scaled output, so changing this scale changes the deadzone angle
+         * unless those thresholds are re-derived too (they were: 13/5 -> 6/2, see Mouse.hpp;
+         * guarded by test_movement_start_stop_thresholds_match_intended_deadzone).
+         */
+        static constexpr float MOVEMENT_SPEED_SCALE{0.5f};
 
         /**
          * Maps ONE axis of calibrated tilt (m/s^2, signed) to an HID movement delta:
          *   n     = clamp(|tilt| / MOVEMENT_FULL_SCALE_TILT, 0, 1)
-         *   delta = sign(tilt) * round(n ^ MOVEMENT_ACCEL_EXPONENT * 127)
+         *   delta = sign(tilt) * round(n ^ MOVEMENT_ACCEL_EXPONENT * 127 * MOVEMENT_SPEED_SCALE)
+         * With the current 0.5 scale the output range is -64..+64 (reached at 20 deg and beyond).
          * The curve is applied to the MAGNITUDE only and the sign multiplied back in afterwards
          * (raising a signed value to a power would lose the sign for even exponents). Clamped
          * via Mouse::saturateToReport. NaN -> 0. Pure, so directly testable.
@@ -105,11 +130,17 @@ namespace Hilton {
          * If "wheel active, no button held, cursor not moving, gyro quiet" persists
          * continuously for longer than this many seconds, it is treated as certainly NOT a real
          * gesture -- no plausible deliberate hold lasts this long with zero gyro movement -- and
-         * Calibration::snapYawToRaw() is called once to break out immediately. Deliberately far
-         * longer than the 20 s window test_sustained_scroll_is_not_absorbed exercises, so a real
-         * sustained hold of that length is completely unaffected.
+         * Calibration::snapYawToRaw() is called once to break out immediately.
+         *
+         * 30 s (was 60 s): Edgar's explicit product decision (#1181, 2026-11-03), chosen over
+         * both 60 s (safe but slow to recover from a large misalignment) and 10 s (fast, but
+         * would cut off any real scroll held longer than 10 s). It is still above the 20 s
+         * window test_sustained_scroll_is_not_absorbed exercises, so a real sustained hold of
+         * that length is unaffected -- but the margin is now only 10 s (it was 40 s at 60 s).
+         * A real quiet hold longer than 30 s WILL be snapped; keep the test window comfortably
+         * below this value if either is ever changed.
          */
-        static constexpr float STUCK_SCROLL_RECOVERY_S{60.0f};
+        static constexpr float STUCK_SCROLL_RECOVERY_S{30.0f};
 
         /**
          * Wheel ticks per second per scroll-angle unit (angle is -127..127).

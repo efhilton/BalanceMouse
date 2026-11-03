@@ -26,8 +26,30 @@ namespace Hilton {
          */
         static constexpr ScrollWheelDt ANGLE_THRESHOLD_START{15};
         static constexpr ScrollWheelDt ANGLE_THRESHOLD_STOP{8};
-        static constexpr MovementDt MOVEMENT_THRESHOLD_START{13};
-        static constexpr MovementDt MOVEMENT_THRESHOLD_STOP{5};
+        /**
+         * Cursor-movement start/stop hysteresis (the XY centre deadzone), compared against
+         * spd = hypot(dx, dy) of the ALREADY-curved-and-scaled HID deltas
+         * (GestureDetector::movementDeltaFromTilt: delta = round(n^2 * 127 * 0.5), n = |tilt|
+         * normalised to MOVEMENT_FULL_SCALE_TILT_DEG = 20 deg, full output 63.5). Mouse has no
+         * notion of degrees, so these are the report-unit equivalents of the intended angles.
+         * #1181, Edgar: "the deadzone for xy movement is very large" -- the old 13/5 were tuned
+         * for the unscaled curve (full output 127) and were not rescaled when
+         * MOVEMENT_SPEED_SCALE = 0.5 halved it, so the start angle grew from ~6.4 to ~9 deg.
+         * Re-derived for the 0.5 scale (n * 20 deg, small-angle approximation):
+         *   START = 6 -> n = sqrt(6/63.5) = 0.307 -> ~6.15 deg (old 13 @ full 127: n = 0.320,
+         *                ~6.4 deg; at the 0.5 scale 13 had become ~9 deg).
+         *   STOP  = 2 -> n = sqrt(2/63.5) = 0.177 -> ~3.5 deg (old 5 @ full 127: n = 0.198,
+         *                ~4.0 deg; at the 0.5 scale 5 had become ~5.6 deg).
+         * (With rounding, the actual single-axis crossings are delta >= 7, i.e. tilt >= ~6.3 deg,
+         * to start and delta <= 1, i.e. tilt < ~3.0 deg, to stop.)
+         * Must be re-derived if GestureDetector::MOVEMENT_SPEED_SCALE, MOVEMENT_ACCEL_EXPONENT
+         * or MOVEMENT_FULL_SCALE_TILT_DEG change --
+         * test_movement_start_stop_thresholds_match_intended_deadzone (host_test) fails if the
+         * curve and these thresholds drift apart. Independent of the calibration idle gate,
+         * which has its own GestureDetector::TILT_IDLE_MAGNITUDE_THRESHOLD.
+         */
+        static constexpr MovementDt MOVEMENT_THRESHOLD_START{6};
+        static constexpr MovementDt MOVEMENT_THRESHOLD_STOP{2};
 
         // Valid range of a signed 8-bit HID mouse report axis/wheel value.
         static constexpr float REPORT_MIN{-127.0f};

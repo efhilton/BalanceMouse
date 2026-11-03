@@ -116,7 +116,9 @@ static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
     Rig rig;
     rig.boot();
 
-    rig.ax = 0.9f; // curves to 9 units (11.7 on the linear idle gauge): below start (13), and idle
+    // Curves to 5 units: below the cursor start (6); 11.7 on the linear idle gauge, below
+    // TILT_IDLE_MAGNITUDE_THRESHOLD (13), so idle.
+    rig.ax = 0.9f;
     rig.run(500);
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(Type::Move));
 
@@ -126,30 +128,30 @@ static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
     const float baseX = rig.calibration.tiltBaselineX();
     TEST_ASSERT_TRUE(baseX > 0.0f && baseX < 0.1f);
     // Deltas now go through the quadratic acceleration curve (#1181), full speed at
-    // MOVEMENT_FULL_SCALE_TILT (3.3552 m/s^2, 20 deg).
-    rig.ax = 3.0f; // n ~ 0.88 -> ~99 units
-    rig.ay = -1.5f; // n = 0.447 -> 0.1999 * 127 = 25.4 -> 25; Y is negated -> HID dy = +25
+    // MOVEMENT_FULL_SCALE_TILT (3.3552 m/s^2, 20 deg), output scaled by MOVEMENT_SPEED_SCALE (0.5).
+    rig.ax = 3.0f; // n ~ 0.88 -> ~49 units
+    rig.ay = -1.5f; // n = 0.447 -> 0.1999 * 63.5 = 12.7 -> 13; Y is negated -> HID dy = +13
     rig.sink.clear();
     rig.run(200); // 10 samples
     TEST_ASSERT_EQUAL_INT(10, rig.sink.count(Type::Move));
     const int expectedDx = GestureDetector::movementDeltaFromTilt(3.0f - baseX);
-    TEST_ASSERT_INT_WITHIN(4, 99, expectedDx); // baseX in (0, 0.1) -> 95..102
+    TEST_ASSERT_INT_WITHIN(2, 49, expectedDx); // baseX in (0, 0.1) -> 47..51
     for (const auto &e: rig.sink.events) {
         TEST_ASSERT_EQUAL_INT(expectedDx, e.dx);
         // Y is negated on the HID path (GestureDetector::handleMouseMovement, #1181):
         // calibratedY < 0 -> dy > 0.
-        TEST_ASSERT_EQUAL_INT(+25, e.dy);
+        TEST_ASSERT_EQUAL_INT(+13, e.dy);
     }
     TEST_ASSERT_EQUAL_FLOAT(baseX, rig.calibration.tiltBaselineX());
 
-    // Between stop (5) and start (13) -> keeps moving. Under the curve that needs ~1.0 m/s^2
-    // (n ~ 0.29 -> ~11 units); the old linear 0.6 m/s^2 would now curve to ~4 (below stop).
-    rig.ax = 1.0f;
+    // Between stop (2) and start (6) -> keeps moving. Under the half-speed curve 0.8 m/s^2
+    // gives n ~ 0.21..0.24 -> 3..4 units.
+    rig.ax = 0.8f;
     rig.ay = 0.0f;
     rig.sink.clear();
     rig.run(100);
     TEST_ASSERT_EQUAL_INT(5, rig.sink.count(Type::Move));
-    const int expectedMidDx = GestureDetector::movementDeltaFromTilt(1.0f - baseX);
+    const int expectedMidDx = GestureDetector::movementDeltaFromTilt(0.8f - baseX);
     TEST_ASSERT_TRUE(expectedMidDx > Mouse::MOVEMENT_THRESHOLD_STOP && expectedMidDx < Mouse::MOVEMENT_THRESHOLD_START);
     TEST_ASSERT_EQUAL_INT(expectedMidDx, rig.sink.events.back().dx);
 
@@ -162,47 +164,55 @@ static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
 
 /**
  * HID movement acceleration curve (#1181, Edgar: "the further we are away from the center, the
- * more 'acceleration' the mouse should see"). Pins the default quadratic curve exactly. The
- * exponent/full-scale are a feel-tuning starting point -- if they are retuned, update the
- * expected numbers here deliberately.
+ * more 'acceleration' the mouse should see"). Pins the default quadratic curve exactly, at the
+ * halved output scale (MOVEMENT_SPEED_SCALE = 0.5, Edgar: "It's crazy fast"; full speed is now
+ * round(127 * 0.5) = 64). The exponent/full-scale/speed scale are feel-tuning values -- if they
+ * are retuned, update the expected numbers here deliberately.
  */
 static void test_movement_acceleration_curve_shape() {
     using G = GestureDetector;
     constexpr float FULL = G::MOVEMENT_FULL_SCALE_TILT;
     TEST_ASSERT_EQUAL_FLOAT(2.0f, G::MOVEMENT_ACCEL_EXPONENT);
+    TEST_ASSERT_EQUAL_FLOAT(0.5f, G::MOVEMENT_SPEED_SCALE);
 
     // Centre and saturation.
     TEST_ASSERT_EQUAL_INT(0, G::movementDeltaFromTilt(0.0f));
     TEST_ASSERT_EQUAL_INT(0, G::movementDeltaFromTilt(-0.0f));
     TEST_ASSERT_EQUAL_INT(0, G::movementDeltaFromTilt(std::numeric_limits<float>::quiet_NaN()));
-    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(FULL));
-    TEST_ASSERT_EQUAL_INT(-127, G::movementDeltaFromTilt(-FULL));
-    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(2.0f * FULL));
-    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(9.81f));
-    TEST_ASSERT_EQUAL_INT(-127, G::movementDeltaFromTilt(-1.0e9f));
-    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(std::numeric_limits<float>::infinity()));
-    TEST_ASSERT_EQUAL_INT(-127, G::movementDeltaFromTilt(-std::numeric_limits<float>::infinity()));
+    TEST_ASSERT_EQUAL_INT(64, G::movementDeltaFromTilt(FULL));
+    TEST_ASSERT_EQUAL_INT(-64, G::movementDeltaFromTilt(-FULL));
+    TEST_ASSERT_EQUAL_INT(64, G::movementDeltaFromTilt(2.0f * FULL));
+    TEST_ASSERT_EQUAL_INT(64, G::movementDeltaFromTilt(9.81f));
+    TEST_ASSERT_EQUAL_INT(-64, G::movementDeltaFromTilt(-1.0e9f));
+    TEST_ASSERT_EQUAL_INT(64, G::movementDeltaFromTilt(std::numeric_limits<float>::infinity()));
+    TEST_ASSERT_EQUAL_INT(-64, G::movementDeltaFromTilt(-std::numeric_limits<float>::infinity()));
 
-    // Half of full tilt -> a QUARTER of full speed (quadratic): 0.25 * 127 = 31.75 -> 32.
-    TEST_ASSERT_EQUAL_INT(32, G::movementDeltaFromTilt(0.5f * FULL));
-    TEST_ASSERT_EQUAL_INT(-32, G::movementDeltaFromTilt(-0.5f * FULL));
-    // Quarter tilt -> 1/16: 7.94 -> 8. Three-quarter tilt -> 9/16: 71.4 -> 71.
-    TEST_ASSERT_EQUAL_INT(8, G::movementDeltaFromTilt(0.25f * FULL));
-    TEST_ASSERT_EQUAL_INT(71, G::movementDeltaFromTilt(0.75f * FULL));
+    // Half of full tilt -> a QUARTER of full speed (quadratic): 0.25 * 63.5 = 15.875 -> 16
+    // (exactly 64 / 4).
+    TEST_ASSERT_EQUAL_INT(16, G::movementDeltaFromTilt(0.5f * FULL));
+    TEST_ASSERT_EQUAL_INT(-16, G::movementDeltaFromTilt(-0.5f * FULL));
+    TEST_ASSERT_EQUAL_INT(G::movementDeltaFromTilt(FULL), 4 * G::movementDeltaFromTilt(0.5f * FULL));
+    // Quarter tilt -> 1/16: 3.97 -> 4. Three-quarter tilt -> 9/16: 35.7 -> 36.
+    TEST_ASSERT_EQUAL_INT(4, G::movementDeltaFromTilt(0.25f * FULL));
+    TEST_ASSERT_EQUAL_INT(36, G::movementDeltaFromTilt(0.75f * FULL));
 
     // Fine control near centre: a small tilt gives disproportionately LESS than the old linear
-    // mapping (GRAVITY_SCALE * tilt, truncated). 0.5 m/s^2 (~2.9 deg): old 6, now 3.
+    // mapping (GRAVITY_SCALE * tilt, truncated). 0.5 m/s^2 (~2.9 deg): old 6, now 1.
     const int oldSmall = static_cast<int>(G::GRAVITY_SCALE * 0.5f);
     const int newSmall = G::movementDeltaFromTilt(0.5f);
     TEST_ASSERT_EQUAL_INT(6, oldSmall);
-    TEST_ASSERT_EQUAL_INT(3, newSmall);
+    TEST_ASSERT_EQUAL_INT(1, newSmall);
     TEST_ASSERT_LESS_THAN_INT(oldSmall, newSmall);
-    // ...and disproportionately MORE out near full tilt: 3.0 m/s^2 (~17.8 deg): old 38, now 102.
+    // ...and still MORE than the old linear mapping out near full tilt, even at half speed:
+    // 3.0 m/s^2 (~17.8 deg): old 38, now 51.
     TEST_ASSERT_EQUAL_INT(38, static_cast<int>(G::GRAVITY_SCALE * 3.0f));
-    TEST_ASSERT_EQUAL_INT(102, G::movementDeltaFromTilt(3.0f));
+    TEST_ASSERT_EQUAL_INT(51, G::movementDeltaFromTilt(3.0f));
+    TEST_ASSERT_GREATER_THAN_INT(38, G::movementDeltaFromTilt(3.0f));
 
     // Faster than linear: doubling the tilt (below full scale) roughly quadruples the output,
-    // and the curve is monotonic and exactly odd-symmetric (sign handled separately).
+    // and the curve is monotonic and exactly odd-symmetric (sign handled separately). Uses
+    // 0.4 -> 0.8 (10 -> 41) rather than 0.2 -> 0.4: at the halved scale 0.2 tilt is only 2.54 ->
+    // 3, and x4 amplifies that rounding error past +/-1.
     int previous = 0;
     for (int i = 1; i <= 120; ++i) {
         const float tilt = FULL * static_cast<float>(i) / 100.0f;
@@ -212,24 +222,24 @@ static void test_movement_acceleration_curve_shape() {
         TEST_ASSERT_EQUAL_INT(-pos, G::movementDeltaFromTilt(-tilt));
         previous = pos;
     }
-    TEST_ASSERT_INT_WITHIN(1, 4 * G::movementDeltaFromTilt(0.2f * FULL), G::movementDeltaFromTilt(0.4f * FULL));
+    TEST_ASSERT_INT_WITHIN(1, 4 * G::movementDeltaFromTilt(0.4f * FULL), G::movementDeltaFromTilt(0.8f * FULL));
 }
 
 /** The curve and the sign mapping end to end, on BOTH axes (X passes through, Y is negated). */
 static void test_movement_curve_preserves_sign_on_both_axes() {
     const float half = 0.5f * GestureDetector::MOVEMENT_FULL_SCALE_TILT;
-    const float small = 0.2f * GestureDetector::MOVEMENT_FULL_SCALE_TILT; // 0.04 * 127 = 5.1 -> 5
+    const float small = 0.2f * GestureDetector::MOVEMENT_FULL_SCALE_TILT; // 0.04 * 63.5 = 2.54 -> 3
     struct Case {
         float ax, ay;
         int dx, dy;
     };
     const Case cases[] = {
-        {+half, 0, +32, 0}, // tilt right   -> cursor right
-        {-half, 0, -32, 0}, // tilt left    -> cursor left
-        {0, +half, 0, -32}, // calibratedY > 0 -> dy < 0 (HID Y negated, #1181)
-        {0, -half, 0, +32}, // calibratedY < 0 -> dy > 0
-        {+half, -half, +32, +32}, // diagonal: both curves independent, signs independent
-        {-half, +half, -32, -32},
+        {+half, 0, +16, 0}, // tilt right   -> cursor right
+        {-half, 0, -16, 0}, // tilt left    -> cursor left
+        {0, +half, 0, -16}, // calibratedY > 0 -> dy < 0 (HID Y negated, #1181)
+        {0, -half, 0, +16}, // calibratedY < 0 -> dy > 0
+        {+half, -half, +16, +16}, // diagonal: both curves independent, signs independent
+        {-half, +half, -16, -16},
     };
     for (const auto &c: cases) {
         Rig rig;
@@ -246,10 +256,10 @@ static void test_movement_curve_preserves_sign_on_both_axes() {
             TEST_ASSERT_EQUAL_INT(c.dy, e.dy);
         }
     }
-    // A small per-axis tilt curves to 5 per axis: hypot(5, 5) = 7.07 < start (13), so a small
+    // A small per-axis tilt curves to 3 per axis: hypot(3, 3) = 4.24 < start (6), so a small
     // diagonal lean does not start movement -- fine control near centre.
-    TEST_ASSERT_EQUAL_INT(5, GestureDetector::movementDeltaFromTilt(small));
-    TEST_ASSERT_EQUAL_INT(-5, GestureDetector::movementDeltaFromTilt(-small));
+    TEST_ASSERT_EQUAL_INT(3, GestureDetector::movementDeltaFromTilt(small));
+    TEST_ASSERT_EQUAL_INT(-3, GestureDetector::movementDeltaFromTilt(-small));
 }
 
 /**
@@ -352,6 +362,50 @@ static void test_scroll_engage_disengage_thresholds_match_mouse_hysteresis() {
     TEST_ASSERT_FLOAT_WITHIN(0.7f, GestureDetector::SCROLL_DISENGAGE_DEG, disengageDeg);
 }
 
+/**
+ * Movement counterpart of the scroll guard above (#1181, Edgar: "the deadzone for xy movement
+ * is very large"). Mouse::MOVEMENT_THRESHOLD_START/STOP are compared against the ALREADY-curved
+ * and scaled HID deltas, so retuning MOVEMENT_SPEED_SCALE / MOVEMENT_ACCEL_EXPONENT /
+ * MOVEMENT_FULL_SCALE_TILT(_DEG) silently moves the deadzone angle -- exactly what happened when
+ * the 0.5 speed scale went in without rescaling 13/5 (start ~6.4 -> ~9 deg). This sweeps the real
+ * curve, finds the tilt angles at which the hysteresis is actually crossed (single axis, so
+ * spd == |dx|), and pins them to the intended ~6.1 deg start / ~3.5 deg stop within 1 deg.
+ * The old 13/5 at the 0.5 scale cross at ~9.1 / ~5.2 deg and would fail this.
+ */
+static void test_movement_start_stop_thresholds_match_intended_deadzone() {
+    constexpr float INTENDED_START_DEG = 6.1f;
+    constexpr float INTENDED_STOP_DEG = 3.5f;
+    constexpr float TOLERANCE_DEG = 1.0f;
+    constexpr float STEP_DEG = 0.01f;
+    const float degToRad = std::acos(-1.0f) / 180.0f;
+    auto deltaAtDeg = [degToRad](const float deg) {
+        return static_cast<int>(GestureDetector::movementDeltaFromTilt(
+            Calibration::STANDARD_GRAVITY_MS2 * std::sin(deg * degToRad)));
+    };
+
+    // Start: Mouse starts moving once spd > START -> first angle where |dx| > START.
+    float startDeg = -1.0f;
+    // Stop: Mouse stops once spd < STOP -> below the first angle where |dx| >= STOP.
+    float stopDeg = -1.0f;
+    for (float deg = 0.0f; deg <= GestureDetector::MOVEMENT_FULL_SCALE_TILT_DEG; deg += STEP_DEG) {
+        const int d = deltaAtDeg(deg);
+        if (stopDeg < 0.0f && d >= Mouse::MOVEMENT_THRESHOLD_STOP) {
+            stopDeg = deg;
+        }
+        if (startDeg < 0.0f && d > Mouse::MOVEMENT_THRESHOLD_START) {
+            startDeg = deg;
+            break;
+        }
+    }
+    printf("movement deadzone: start at %.2f deg, stop below %.2f deg\n", startDeg, stopDeg);
+    TEST_ASSERT_TRUE_MESSAGE(startDeg > 0.0f, "start threshold never crossed below full-scale tilt");
+    TEST_ASSERT_TRUE_MESSAGE(stopDeg > 0.0f, "stop threshold never crossed below full-scale tilt");
+    TEST_ASSERT_FLOAT_WITHIN(TOLERANCE_DEG, INTENDED_START_DEG, startDeg);
+    TEST_ASSERT_FLOAT_WITHIN(TOLERANCE_DEG, INTENDED_STOP_DEG, stopDeg);
+    // And it must still be a real hysteresis gap, not a single threshold.
+    TEST_ASSERT_TRUE(startDeg - stopDeg > 1.0f);
+}
+
 static void test_scroll_suppressed_while_button_held_and_buttons_suppressed_while_scrolling() {
     Rig rig;
     rig.boot();
@@ -368,6 +422,125 @@ static void test_scroll_suppressed_while_button_held_and_buttons_suppressed_whil
     rig2.run(200);
     TEST_ASSERT_EQUAL_INT(0, rig2.sink.count(Type::Down));
     TEST_ASSERT_GREATER_THAN_INT(0, rig2.sink.count(Type::Scroll));
+}
+
+/**
+ * Scroll vs. incidental side tilt (#1181, 2026-11-02). Twisting the board around Z to scroll also
+ * tips it sideways 10-15 deg. In live ON-state captures the side tilt had a median of 24.6 on the
+ * linear GRAVITY_SCALE metric (90th percentile 38.7), and in 87% of samples it was above the old
+ * movement start (13). That tilt latched mouse.isMoving() before yaw crossed SCROLL_ENGAGE_DEG,
+ * and handleScrollWheel's old `|| mouse.isMoving()` bail-out then blocked scroll for good. See the
+ * doc comment on GestureDetector::handleScrollWheel.
+ *
+ * Tilt units: rig.ax is the accelerometer X in m/s^2 (Rig boots with the baseline at 0).
+ * 1.9 m/s^2 = 9.8 * sin(~11.2 deg) -> 127/9.8 * 1.9 = 24.6 linear, the captured median.
+ */
+static constexpr float CAPTURED_MEDIAN_SIDE_TILT{1.9f}; // ~11.2 deg, 24.6 linear
+static constexpr float CAPTURED_P90_SIDE_TILT{2.99f}; // ~17.8 deg, 38.7 linear
+
+static void test_scroll_engages_despite_accompanying_side_tilt() {
+    Rig rig;
+    rig.boot();
+    TEST_ASSERT_INT_WITHIN(1, 25, static_cast<int>(GestureDetector::GRAVITY_SCALE * CAPTURED_MEDIAN_SIDE_TILT));
+
+    // Real ordering: the side tilt arrives first and latches the movement hysteresis...
+    rig.ax = CAPTURED_MEDIAN_SIDE_TILT;
+    rig.run(200);
+    TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isMoving(), "precondition: the side tilt alone latches movement");
+    TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.count(Type::Move));
+
+    // ...then yaw crosses SCROLL_ENGAGE_DEG with the tilt still held. Scroll must engage.
+    rig.yaw = GestureDetector::SCROLL_ENGAGE_DEG + 5.0f;
+    rig.sink.clear();
+    rig.run(1000);
+    TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(),
+                             "scroll must engage even though the cursor was already moving");
+    TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.scrollTotal());
+    // The stale movement latch is released while scrolling, so the stuck-scroll recovery and
+    // the yaw idle gate (both of which require !isMoving()) are not blocked.
+    TEST_ASSERT_FALSE(rig.mouse.isMoving());
+}
+
+/**
+ * Unchanged by the fix: while scroll is engaged, movement output stays fully suppressed at the
+ * CURRENT thresholds (start 6 / stop 2), for any tilt, including near full scale. Covers both
+ * orderings (scroll first then tilt, and tilt first then scroll), then checks that movement
+ * resumes once scroll lets go.
+ */
+static void test_active_scroll_fully_suppresses_movement() {
+    TEST_ASSERT_EQUAL_INT(6, Mouse::MOVEMENT_THRESHOLD_START);
+    TEST_ASSERT_EQUAL_INT(2, Mouse::MOVEMENT_THRESHOLD_STOP);
+
+    // Ordering A: engage scroll from a level board, then tilt hard.
+    Rig a;
+    a.boot();
+    a.yaw = 20.0f;
+    a.run(200);
+    TEST_ASSERT_TRUE(a.mouse.isScrollWheelActive());
+    a.sink.clear();
+    a.ax = CAPTURED_P90_SIDE_TILT;
+    a.ay = -2.0f;
+    a.run(1000);
+    TEST_ASSERT_EQUAL_INT(0, a.sink.count(Type::Move));
+    TEST_ASSERT_GREATER_THAN_INT(0, a.sink.scrollTotal());
+    TEST_ASSERT_FALSE(a.mouse.isMoving());
+    TEST_ASSERT_EQUAL_INT(0, a.mouse.getMovement().deltaX);
+    TEST_ASSERT_EQUAL_INT(0, a.mouse.getMovement().deltaY);
+
+    // Ordering B: moving first, then scroll engages. Not a single Move after the engage sample.
+    Rig b;
+    b.boot();
+    b.ax = CAPTURED_MEDIAN_SIDE_TILT;
+    b.run(200);
+    TEST_ASSERT_TRUE(b.mouse.isMoving());
+    b.yaw = 20.0f;
+    b.step(); // engages on this sample (scroll is dispatched first)
+    TEST_ASSERT_TRUE(b.mouse.isScrollWheelActive());
+    b.sink.clear();
+    b.ax = CAPTURED_P90_SIDE_TILT;
+    b.run(1000);
+    TEST_ASSERT_EQUAL_INT(0, b.sink.count(Type::Move));
+    TEST_ASSERT_GREATER_THAN_INT(0, b.sink.scrollTotal());
+
+    // Scroll released (yaw back to centre), tilt still held: movement resumes from rest.
+    b.yaw = 0.0f;
+    b.sink.clear();
+    b.run(400);
+    TEST_ASSERT_FALSE(b.mouse.isScrollWheelActive());
+    TEST_ASSERT_GREATER_THAN_INT(0, b.sink.count(Type::Move));
+}
+
+/**
+ * Corner case, asserted explicitly: a side tilt that would have counted as "moving" even under
+ * the OLD, larger 13/5 movement thresholds still lets scroll engage. Uses the captured 90th
+ * percentile (38.7 linear). That is above 13 on the linear metric AND on the curved HID delta
+ * that Mouse's hysteresis actually compares against, so it is "moving" under any threshold this
+ * project has used.
+ */
+static void test_scroll_engages_with_tilt_that_moved_under_old_thresholds() {
+    constexpr int OLD_MOVEMENT_THRESHOLD_START = 13;
+    TEST_ASSERT_GREATER_THAN_INT(OLD_MOVEMENT_THRESHOLD_START,
+                                 static_cast<int>(GestureDetector::GRAVITY_SCALE * CAPTURED_P90_SIDE_TILT));
+    TEST_ASSERT_GREATER_THAN_INT(OLD_MOVEMENT_THRESHOLD_START,
+                                 GestureDetector::movementDeltaFromTilt(CAPTURED_P90_SIDE_TILT));
+
+    Rig rig;
+    rig.boot();
+    rig.ax = CAPTURED_P90_SIDE_TILT;
+    rig.run(200);
+    TEST_ASSERT_TRUE(rig.mouse.isMoving());
+
+    // Yaw just past the engage point (Mouse needs report angle > START: SCROLL_ENGAGE_DEG + 1
+    // clears that comfortably), not a huge twist.
+    rig.yaw = GestureDetector::SCROLL_ENGAGE_DEG + 1.0f;
+    rig.sink.clear();
+    rig.run(1000);
+    TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(),
+                             "a tilt that was 'moving' under the old 13/5 thresholds must not block scroll");
+    TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.scrollTotal());
+    // Scroll is dispatched first, so it wins from the very first sample yaw is past the engage
+    // point: no Move events at all in this window.
+    TEST_ASSERT_EQUAL_INT(0, rig.sink.count(Type::Move));
 }
 
 static void test_drag_sequence_produces_down_moves_up() {
@@ -464,8 +637,9 @@ static void test_full_chain_gestures_to_hid_reports_via_fanout() {
 
     TEST_ASSERT_EQUAL_HEX8(0x01, sent.at(0)[0]);
     TEST_ASSERT_EQUAL_HEX8(0x00, sent.at(1)[0]);
-    // 3.0 m/s^2 through the quadratic curve (#1181): (3.0/3.3552)^2 * 127 = 101.5 -> 102.
-    TEST_ASSERT_EQUAL_INT(102, static_cast<int8_t>(sent.at(2)[1]));
+    // 3.0 m/s^2 through the quadratic curve (#1181) at half speed (MOVEMENT_SPEED_SCALE 0.5):
+    // (3.0/3.3552)^2 * 127 * 0.5 = 50.8 -> 51.
+    TEST_ASSERT_EQUAL_INT(51, static_cast<int8_t>(sent.at(2)[1]));
     int wheel = 0;
     for (const auto &r: sent) wheel += static_cast<int8_t>(r[3]);
     TEST_ASSERT_INT_WITHIN(1, -14, wheel);
@@ -603,7 +777,11 @@ int main() {
     RUN_TEST(test_scroll_ticks_have_direction_and_rate);
     RUN_TEST(test_scroll_engage_disengage_has_a_real_deadzone);
     RUN_TEST(test_scroll_engage_disengage_thresholds_match_mouse_hysteresis);
+    RUN_TEST(test_movement_start_stop_thresholds_match_intended_deadzone);
     RUN_TEST(test_scroll_suppressed_while_button_held_and_buttons_suppressed_while_scrolling);
+    RUN_TEST(test_scroll_engages_despite_accompanying_side_tilt);
+    RUN_TEST(test_active_scroll_fully_suppresses_movement);
+    RUN_TEST(test_scroll_engages_with_tilt_that_moved_under_old_thresholds);
     RUN_TEST(test_drag_sequence_produces_down_moves_up);
     RUN_TEST(test_hid_report_layout);
     RUN_TEST(test_report_builder_one_report_per_event_with_button_mask);

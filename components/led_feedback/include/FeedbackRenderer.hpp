@@ -140,12 +140,15 @@ namespace Hilton {
         // ---- Intensities (percent; all <= Lights::MAX_INTENSITY_PERCENT) ----
         // Halved from the original 2/30/40/20/40/30 set when the 25% ceiling landed (#1181,
         // Edgar's real-hardware heat finding) -- same relative design, proportionally dimmer.
-        static constexpr uint8_t PULSE_MIN_INTENSITY{1};
-        static constexpr uint8_t PULSE_MAX_INTENSITY{15};
-        static constexpr uint8_t FLASH_INTENSITY{20};
-        static constexpr uint8_t BALL_INTENSITY{10};
-        static constexpr uint8_t BUTTON_INTENSITY{20};
-        static constexpr uint8_t CHEVRON_INTENSITY{15};
+        // Halved a SECOND time on 2026-11-02 (#1181, Edgar's second real-hardware heat complaint,
+        // ceiling 25% -> 12%): 1/15/20/10/20/15 -> 0/7/10/5/10/7, each rounded DOWN (heat-safety
+        // direction). PULSE_MIN 0 just means the idle breathing pulse bottoms out at off.
+        static constexpr uint8_t PULSE_MIN_INTENSITY{0};
+        static constexpr uint8_t PULSE_MAX_INTENSITY{7};
+        static constexpr uint8_t FLASH_INTENSITY{10};
+        static constexpr uint8_t BALL_INTENSITY{5};
+        static constexpr uint8_t BUTTON_INTENSITY{10};
+        static constexpr uint8_t CHEVRON_INTENSITY{7};
 
         // ---- Colours (full-scale RGB; intensity applied separately) ----
         static constexpr RgbPixel PULSE_BLUE{0, 0, 255, 0};

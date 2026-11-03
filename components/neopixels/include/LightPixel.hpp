@@ -37,7 +37,7 @@ namespace Hilton {
             return intensity;
         }
 
-        /** Intensity in percent; hard-clamped to Lights::MAX_INTENSITY_PERCENT (50) to limit heat. */
+        /** Intensity in percent; hard-clamped to Lights::MAX_INTENSITY_PERCENT (currently 12) to limit heat. */
         LightPixel &setIntensity(const uint8_t intensity) {
             this->intensity = Lights::clampIntensity(intensity);
             return *this;

@@ -16,8 +16,13 @@ namespace Hilton::Lights {
      * than ball, etc.) is unchanged, just dimmer/cooler overall. LightPixel clamps
      * in its constructor and in setIntensity(), so this holds for every caller, not
      * just the LED feedback renderer.
+     *
+     * 2026-11-02 (#1181): halved again in response to a second real-hardware heat complaint
+     * (Edgar: "Please half the light intensity. It still gets pretty hot."). 25% -> 12%,
+     * rounded DOWN (12.5 -> 12) since the concern is heat -- err cooler, not brighter. The
+     * per-mode intensities in FeedbackRenderer were halved again the same way.
      */
-    static constexpr uint8_t MAX_INTENSITY_PERCENT{25};
+    static constexpr uint8_t MAX_INTENSITY_PERCENT{12};
 
     constexpr uint8_t clampIntensity(const uint8_t intensity) {
         return intensity > MAX_INTENSITY_PERCENT ? MAX_INTENSITY_PERCENT : intensity;

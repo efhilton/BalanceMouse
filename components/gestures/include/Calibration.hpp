@@ -51,7 +51,18 @@ namespace Hilton {
          * ~15 s of standing still. Judgment call -- tune on hardware.
          */
         static constexpr float DEFAULT_TILT_TIME_CONSTANT_S{5.0f};
-        static constexpr float DEFAULT_YAW_TIME_CONSTANT_S{5.0f};
+        /**
+         * Yaw EMA time constant: 3 s (was 5 s). 2026-11-02 (#1181), Edgar after a real-hardware
+         * test: "The Z axis needs to adapt faster... within 10 seconds, that direction becomes our
+         * new zero." A first-order EMA covers 1 - e^(-t/tau) of a step, i.e. ~95% at 3*tau, so
+         * "done within 10 s" means tau ~= 10/3 = 3.33 s; 3.0 s is the clean constant giving
+         * 1 - e^(-10/3) ~= 96.4% at 10 s. This only governs the ordinary idle re-centring path
+         * (yawIdle in GestureDetector::process(): no button, not moving, not scroll-active, below
+         * the scroll start threshold). A misalignment large enough to engage scrolling never
+         * reaches this EMA; that case is GestureDetector::STUCK_SCROLL_RECOVERY_S (30 s).
+         * Tilt (DEFAULT_TILT_TIME_CONSTANT_S) is deliberately unchanged -- Edgar asked for Z only.
+         */
+        static constexpr float DEFAULT_YAW_TIME_CONSTANT_S{3.0f};
 
         /**
          * Samples discarded after start-up before the baseline may be seeded.
