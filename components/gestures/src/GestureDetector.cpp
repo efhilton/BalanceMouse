@@ -8,8 +8,9 @@ namespace Hilton {
 
     static constexpr Button ALL_BUTTONS[3]{Button::Left, Button::Right, Button::Middle};
 
-    GestureDetector::GestureDetector(Mouse &mouse, Calibration &calibration, MouseEventSink *sink)
-        : mouse(mouse), calibration(calibration), sink(sink) {
+    GestureDetector::GestureDetector(Mouse &mouse, Calibration &calibration, MouseEventSink *sink,
+                                      const bool clicksEnabled)
+        : mouse(mouse), calibration(calibration), sink(sink), clicksEnabled(clicksEnabled) {
     }
 
     bool GestureDetector::anyButtonPressed() const {
@@ -170,7 +171,7 @@ namespace Hilton {
         // so an active scroll suppresses button and movement detection.
         // (Scroll itself is suppressed while a button is held or the cursor is moving.)
         bool handled = handleScrollWheel(yaw, dt);
-        if (!handled) {
+        if (!handled && clicksEnabled) {
             handled = handleButtonClick(sample);
         }
         if (!handled) {
@@ -179,17 +180,41 @@ namespace Hilton {
 
         emitButtonTransitions(before);
 
-        // Baselines may only adapt while completely idle: no button held (so a
-        // drag is never absorbed), not moving, not scrolling, and both
-        // calibrated signals below their START thresholds.
+        // Baselines may only adapt while completely idle: no button held (so a drag is never
+        // absorbed), not moving, not scrolling, and both calibrated signals below their START
+        // thresholds. Unchanged from the original code (now just two independently-computed
+        // flags instead of one shared bool -- see Calibration::adapt()'s doc comment).
         const float tiltUnits = std::hypot(GRAVITY_SCALE * tiltX, GRAVITY_SCALE * tiltY);
         const float yawUnits = std::abs(SCROLL_SCALE * yaw);
-        lastIdle = !anyButtonPressed()
-                   && !mouse.isMoving()
-                   && !mouse.isScrollWheelActive()
-                   && tiltUnits < static_cast<float>(Mouse::MOVEMENT_THRESHOLD_START)
-                   && yawUnits < static_cast<float>(Mouse::ANGLE_THRESHOLD_START);
-        calibration.adapt(dt, lastIdle);
+        const bool tiltIdle = !anyButtonPressed()
+                              && !mouse.isScrollWheelActive()
+                              && tiltUnits < static_cast<float>(Mouse::MOVEMENT_THRESHOLD_START);
+        const bool yawIdle = !anyButtonPressed()
+                             && !mouse.isMoving()
+                             && !mouse.isScrollWheelActive()
+                             && yawUnits < static_cast<float>(Mouse::ANGLE_THRESHOLD_START);
+        lastIdle = tiltIdle && yawIdle;
+        calibration.adapt(dt, tiltIdle, yawIdle);
+
+        // Stuck-scroll recovery timeout (#1181, Edgar's real-hardware drift find -- see
+        // STUCK_SCROLL_RECOVERY_S's doc comment for the full story). Tracked as a running
+        // duration rather than folded into yawIdle/adapt() because no gradual EMA correction
+        // can satisfy both "zero drift during any real sustained scroll" and "eventually
+        // recovers" at once -- this is a one-time, decisive snap instead, gated on having seen
+        // this exact state continuously for far longer than any real gesture plausibly lasts.
+        const bool stuckAndQuiet = mouse.isScrollWheelActive()
+                                   && !anyButtonPressed()
+                                   && !mouse.isMoving()
+                                   && std::abs(sample.gyro.z) < Calibration::MAX_SEED_GYRO_DPS;
+        if (stuckAndQuiet) {
+            stuckScrollSeconds += dt;
+            if (stuckScrollSeconds > STUCK_SCROLL_RECOVERY_S) {
+                calibration.snapYawToRaw();
+                stuckScrollSeconds = 0.0f;
+            }
+        } else {
+            stuckScrollSeconds = 0.0f;
+        }
 
         return handled;
     }

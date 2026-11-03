@@ -34,7 +34,15 @@ namespace Hilton {
 
         void onScroll(int8_t ticks) override;
 
-        /** Calibrated tilt and current scroll deflection (0 when the wheel is inactive). */
+        /**
+         * Calibrated tilt and current scroll deflection (0 when the wheel is inactive).
+         *
+         * `tiltX`/`tiltY` here are the raw calibrated channels (Calibration::calibratedTiltX/Y,
+         * same values GestureDetector feeds to HID movement). They are stored as the ball's
+         * display-space tilt with X unchanged and Y negated. This mapping was found empirically
+         * over three rounds of real-hardware testing (#1181, Edgar's spring/damper-from-center
+         * ball spec), not derived from physics; see the .cpp for the details.
+         */
         void updateMotion(float tiltX, float tiltY, int8_t scrollAngle);
 
         /**
@@ -53,6 +61,7 @@ namespace Hilton {
         FeedbackSnapshot state{};
         int8_t scrollAngle{0};
         int8_t lastTickDirection{0};
+        uint8_t lastMagnitude{0};
         uint32_t lastTickMs{0};
         bool hasTick{false};
         uint32_t lastPairingSequence{0};

@@ -1,6 +1,6 @@
 # Host (x86/Linux) unit tests for the portable parts of the firmware:
 #   components/mouse, components/gestures, components/led_feedback,
-#   components/neopixels/include/LightPixel.hpp (50% intensity ceiling).
+#   components/neopixels/include/LightPixel.hpp (intensity ceiling, Lights::MAX_INTENSITY_PERCENT).
 #
 # Plain CMake + Unity (the copy bundled with ESP-IDF when IDF_PATH is set, otherwise
 # fetched from GitHub). Built with AddressSanitizer + UBSan by default.

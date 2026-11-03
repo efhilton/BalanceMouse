@@ -37,7 +37,20 @@ namespace Hilton {
         /** Boot-time log of the calibration warm-up samples and the seeded baseline. */
         void logCalibrationWarmup(const MotionSample &sample);
 
+        /**
+         * Periodic post-seed log of calibrated tilt X/Y and yaw (#1181, Edgar/Maria,
+         * 2026-11-02): lets the axis-swap fix, and any other orientation behaviour, be
+         * verified by reading numeric values over serial -- without needing HID movement
+         * re-enabled (that transport stays fully off per Main.cpp). Axis convention is Edgar's
+         * authoritative one (right-hand rule, X=right, Y=forward, Z=up): rotation about X
+         * should move only the calibrated Y value, rotation about Y should move only the
+         * calibrated X value, rotation about Z should only affect scroll/yaw. Separate from
+         * logCalibrationWarmup(), which only covers the one-time seed.
+         */
+        void logCalibratedTiltForVerification(const MotionSample &sample);
+
         static constexpr int MAX_WARMUP_SAMPLES_LOGGED{Calibration::DEFAULT_WARMUP_SAMPLES + 5};
+        static constexpr uint32_t TILT_LOG_PERIOD_MS{200};
 
         Mouse &mouse;
         FeedbackState *feedback;
@@ -45,5 +58,6 @@ namespace Hilton {
         GestureDetector detector;
         int warmupSamplesLogged{0};
         bool seedLogged{false};
+        uint32_t lastTiltLogMs{0};
     };
 }

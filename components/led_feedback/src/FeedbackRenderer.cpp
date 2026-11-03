@@ -42,7 +42,7 @@ namespace Hilton {
                 break;
             case Mode::Mouse:
                 if (s.scrollDirection != 0) {
-                    renderChevrons(f, s.scrollDirection, nowMs);
+                    renderChevrons(f, s.scrollDirection, chevronStepMs(s.scrollMagnitude), nowMs);
                 } else {
                     renderBall(f, s);
                 }
@@ -72,33 +72,48 @@ namespace Hilton {
     }
 
     void FeedbackRenderer::ballPosition(const float tiltX, const float tiltY, int &outX, int &outY) {
-        constexpr float CENTER{(Matrix::WIDTH - 2) / 2.0f}; // 3: ball covers cols/rows 3..4
-        auto axis = [](const float tilt) {
+        // 1x1 ball (#1181, Edgar): full travel range is the whole 0..WIDTH-1/0..HEIGHT-1 span,
+        // not WIDTH-2/HEIGHT-2 (that "-2" was for the old 2x2 ball's top-left cell). CENTER is
+        // the true grid centre (3.5 on an 8-wide row), not a whole pixel -- std::lround below
+        // resolves it to the nearest real pixel.
+        constexpr float CENTER_X{(Matrix::WIDTH - 1) / 2.0f};
+        constexpr float CENTER_Y{(Matrix::HEIGHT - 1) / 2.0f};
+        auto axis = [](const float tilt, const float center) {
             float n = std::isnan(tilt) ? 0.0f : tilt / BALL_FULL_SCALE_TILT;
             n = std::clamp(n, -1.0f, 1.0f);
-            return static_cast<int>(std::lround(CENTER + n * CENTER));
+            return static_cast<int>(std::lround(center + n * center));
         };
-        outX = std::clamp(axis(tiltX), 0, Matrix::WIDTH - 2);
-        outY = std::clamp(axis(tiltY), 0, Matrix::HEIGHT - 2);
+        outX = std::clamp(axis(tiltX, CENTER_X), 0, Matrix::WIDTH - 1);
+        outY = std::clamp(axis(tiltY, CENTER_Y), 0, Matrix::HEIGHT - 1);
     }
 
     void FeedbackRenderer::renderBall(Frame &f, const FeedbackSnapshot &s) {
         int bx = 0;
         int by = 0;
         ballPosition(s.tiltX, s.tiltY, bx, by);
-        for (int dy = 0; dy < 2; ++dy) {
-            for (int dx = 0; dx < 2; ++dx) {
-                f.set(bx + dx, by + dy, BALL_WHITE);
-            }
-        }
+        f.set(bx, by, BALL_WHITE);
     }
 
-    void FeedbackRenderer::renderChevrons(Frame &f, const int direction, const uint32_t nowMs) {
+    uint32_t FeedbackRenderer::chevronStepMs(const uint8_t magnitude) {
+        // Linear ramp from CHEVRON_STEP_MS (slow, at/near engagement) down to
+        // CHEVRON_STEP_MS_FAST (fast, at full 127 deflection). Pure function of magnitude only
+        // -- no accumulated phase state, consistent with this whole renderer being a pure
+        // function of (snapshot, time); the tradeoff is a step-size discontinuity in the
+        // chevron phase right when magnitude changes, not a smooth acceleration. Acceptable:
+        // the pattern repeats every CHEVRON_PERIOD_ROWS rows regardless, so a phase jump reads
+        // as a normal animation step, not a glitch.
+        const float frac = std::clamp(static_cast<float>(magnitude) / 127.0f, 0.0f, 1.0f);
+        const float ms = static_cast<float>(CHEVRON_STEP_MS)
+                        + frac * (static_cast<float>(CHEVRON_STEP_MS_FAST) - static_cast<float>(CHEVRON_STEP_MS));
+        return static_cast<uint32_t>(std::lround(ms));
+    }
+
+    void FeedbackRenderer::renderChevrons(Frame &f, const int direction, const uint32_t stepMs, const uint32_t nowMs) {
         // A centred column of 2-row chevrons, one every CHEVRON_PERIOD_ROWS rows,
-        // shifted by one row every CHEVRON_STEP_MS in the scroll direction.
+        // shifted by one row every stepMs in the scroll direction (see chevronStepMs).
         //   up (+1):  ..XX..     down (-1): .X..X.
         //            .X..X.                ..XX..
-        const int phase = static_cast<int>((nowMs / CHEVRON_STEP_MS) % CHEVRON_PERIOD_ROWS);
+        const int phase = static_cast<int>((nowMs / stepMs) % CHEVRON_PERIOD_ROWS);
         for (int y = 0; y < Matrix::HEIGHT; ++y) {
             // Moving up: pattern row index increases as phase increases -> content moves toward y=0.
             const int k = direction > 0

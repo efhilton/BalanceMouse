@@ -84,11 +84,15 @@ namespace TestSupport {
         }
 
         /**
-         * Feed the calibration warm-up plus the seeding sample at the current state, so the
-         * baselines are seeded from it (the "power on here" step for tests).
+         * Feed the calibration warm-up plus enough settling samples (see
+         * Calibration::SETTLING_SAMPLES, #1181) at the current state, so the baselines are
+         * seeded from it (the "power on here" step for tests). Gyro must be quiet (the default)
+         * for every one of these samples to count toward settling.
          */
         void boot() {
-            for (int i = 0; i <= Hilton::Calibration::DEFAULT_WARMUP_SAMPLES; ++i) step();
+            for (int i = 0; i < Hilton::Calibration::DEFAULT_WARMUP_SAMPLES + Hilton::Calibration::SETTLING_SAMPLES + 1;
+                 ++i)
+                step();
         }
 
         void run(const uint32_t durationMs) {

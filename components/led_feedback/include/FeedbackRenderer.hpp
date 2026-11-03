@@ -68,6 +68,14 @@ namespace Hilton {
         /** +1 scroll up, -1 scroll down, 0 = not scrolling. */
         int8_t scrollDirection{0};
 
+        /**
+         * |scroll report angle| (0..127), 0 = not scrolling. Drives chevron animation speed:
+         * slow near engagement, faster toward full deflection (#1181, Edgar: "nothing from
+         * 0-10 [deg]. Past 10 degrees, scroll-down chevrons start animating slowly, speeding
+         * up as the angle increases, up to a max angle"). See FeedbackRenderer::chevronStepMs.
+         */
+        uint8_t scrollMagnitude{0};
+
         /** Calibrated tilt (m/s^2, baseline already subtracted). +x = right, +y = down (same as cursor). */
         float tiltX{0};
         float tiltY{0};
@@ -81,7 +89,7 @@ namespace Hilton {
      *   1. pairing success flash (2x green) / failure flash (3x red), if still within its window
      *   2. not Connected (Idle/Advertising/Connecting) -> slow blue breathing pulse over the whole matrix
      *   3. Connected -> mouse display:
-     *        scrolling ? animated chevron "treadmill" column : 2x2 tilt ball
+     *        scrolling ? animated chevron "treadmill" column : 1x1 tilt ball
      *        + button overlay: Left = far-left column (green), Right = far-right column (amber),
      *          Middle = top row (cyan); solid while a click is short, blinking once held
      *          past DRAG_DWELL_MS ("drag" display state).
@@ -101,19 +109,43 @@ namespace Hilton {
         /** A button still held after this long is shown as a drag (blinking). Judgment call. */
         static constexpr uint32_t DRAG_DWELL_MS{500};
         static constexpr uint32_t DRAG_BLINK_HALF_PERIOD_MS{200};
-        /** The chevrons advance one row per step. */
+        /**
+         * The chevrons advance one row every `chevronStepMs(magnitude)` ms, interpolated
+         * between these two (#1181, Edgar: speed ramps with deflection, not a fixed rate).
+         * CHEVRON_STEP_MS is also the slowest rate, at/near engagement (magnitude ~ 0..16),
+         * kept at the original fixed value so existing full-deflection-unaware callers (and
+         * the original behaviour at low magnitude) are unchanged.
+         */
         static constexpr uint32_t CHEVRON_STEP_MS{120};
+        static constexpr uint32_t CHEVRON_STEP_MS_FAST{30};
         static constexpr int CHEVRON_PERIOD_ROWS{4};
-        /** Tilt (m/s^2) that pushes the ball all the way to the edge (~30 degrees). */
-        static constexpr float BALL_FULL_SCALE_TILT{4.9f};
+        /**
+         * Tilt angle (degrees) that should push the ball all the way to the matrix edge
+         * (#1181, Edgar: shrink the ball to 1x1 and scale it to use the full travel range at
+         * this angle, "more dramatic" movement). Documentation/traceability constant, same
+         * pattern as GestureDetector::SCROLL_ENGAGE_DEG -- the actual enforcement is the
+         * derived BALL_FULL_SCALE_TILT below; guarded by
+         * test_ball_full_scale_tilt_matches_its_degree_spec.
+         */
+        static constexpr float BALL_FULL_SCALE_TILT_DEG{20.0f};
+        /**
+         * Tilt (m/s^2) equivalent of BALL_FULL_SCALE_TILT_DEG. Derived the same way as the
+         * axis-swap/scroll work (#1181): at rest the accelerometer reads the gravity reaction
+         * force g; tilting by angle `a` about the perpendicular axis gives a lateral component
+         * of g*sin(a) (see FeedbackState::updateMotion's derivation comment). 9.81 * sin(20 deg)
+         * = 9.81 * 0.34202... = 3.3552...  Recompute this if BALL_FULL_SCALE_TILT_DEG changes.
+         */
+        static constexpr float BALL_FULL_SCALE_TILT{3.3552f};
 
         // ---- Intensities (percent; all <= Lights::MAX_INTENSITY_PERCENT) ----
-        static constexpr uint8_t PULSE_MIN_INTENSITY{2};
-        static constexpr uint8_t PULSE_MAX_INTENSITY{30};
-        static constexpr uint8_t FLASH_INTENSITY{40};
-        static constexpr uint8_t BALL_INTENSITY{20};
-        static constexpr uint8_t BUTTON_INTENSITY{40};
-        static constexpr uint8_t CHEVRON_INTENSITY{30};
+        // Halved from the original 2/30/40/20/40/30 set when the 25% ceiling landed (#1181,
+        // Edgar's real-hardware heat finding) -- same relative design, proportionally dimmer.
+        static constexpr uint8_t PULSE_MIN_INTENSITY{1};
+        static constexpr uint8_t PULSE_MAX_INTENSITY{15};
+        static constexpr uint8_t FLASH_INTENSITY{20};
+        static constexpr uint8_t BALL_INTENSITY{10};
+        static constexpr uint8_t BUTTON_INTENSITY{20};
+        static constexpr uint8_t CHEVRON_INTENSITY{15};
 
         // ---- Colours (full-scale RGB; intensity applied separately) ----
         static constexpr RgbPixel PULSE_BLUE{0, 0, 255, 0};
@@ -135,7 +167,12 @@ namespace Hilton {
 
         [[nodiscard]] static Frame render(const FeedbackSnapshot &s, uint32_t nowMs);
 
-        /** Ball's top-left cell for a calibrated tilt; the ball covers (x..x+1, y..y+1). Centred = (3, 3). */
+        /**
+         * Ball's single pixel cell for a calibrated tilt, scaled so |tilt| == BALL_FULL_SCALE_TILT
+         * reaches the matrix edge (#1181, Edgar: 1x1 ball, full travel range at 20 degrees).
+         * Centred (zero tilt) = (3, 3) or (4, 4) depending on rounding -- an 8-wide grid has no
+         * single exact centre pixel; std::lround's round-half-away-from-zero puts it at (4, 4).
+         */
         static void ballPosition(float tiltX, float tiltY, int &outX, int &outY);
 
         /** Intensity of the pairing pulse at `nowMs` (smooth raised-cosine between MIN and MAX). */
@@ -146,6 +183,15 @@ namespace Hilton {
 
         [[nodiscard]] static bool isDrag(uint32_t pressedAtMs, uint32_t nowMs);
 
+        /**
+         * Chevron row-advance period for a given |scroll angle| (0..127 report units):
+         * CHEVRON_STEP_MS at magnitude 0, linearly down to CHEVRON_STEP_MS_FAST at magnitude
+         * 127 (always the saturated report range regardless of GestureDetector's
+         * MAX_SCROLL_ANGLE_DEG, so this needs no tuning when that changes). Public and pure so
+         * it is directly testable without going through a full render().
+         */
+        [[nodiscard]] static uint32_t chevronStepMs(uint8_t magnitude);
+
     private:
         static void renderFlash(Frame &f, const RgbPixel &color, uint32_t elapsedMs);
 
@@ -153,7 +199,7 @@ namespace Hilton {
 
         static void renderBall(Frame &f, const FeedbackSnapshot &s);
 
-        static void renderChevrons(Frame &f, int direction, uint32_t nowMs);
+        static void renderChevrons(Frame &f, int direction, uint32_t stepMs, uint32_t nowMs);
 
         static void renderButtons(Frame &f, const FeedbackSnapshot &s, uint32_t nowMs);
     };

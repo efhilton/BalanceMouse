@@ -106,7 +106,14 @@ extern "C" void app_main(void) {
 
     // --- Gesture events fan out to the HID transport and the LED feedback ---
     static Hilton::MouseEventFanout events;
-    events.addSink(&ble);
+    // HID transport temporarily disabled (#1181, Edgar, 2026-11-02): while the axis-mapping
+    // fix is being checked out, he wants to confirm the device is doing the right thing from
+    // the LED display alone, without an actual mouse cursor on his screen as an extra variable.
+    // BLE itself still starts and still pairs below (ble.start()) -- the LED task reads its
+    // connection phase directly, not through this fanout -- so the "Connected" display still
+    // works; only the HID button/movement/scroll reports it would have sent are suppressed.
+    // Re-enable by uncommenting the line below once movement/click behaviour is confirmed.
+    // events.addSink(&ble);
     events.addSink(&feedback);
 
     static Hilton::Mouse mouse;

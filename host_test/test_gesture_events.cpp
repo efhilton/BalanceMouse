@@ -23,7 +23,7 @@ static void assertEvent(const RecordedEvent &e, const Type type, const Button bu
 
 static void test_left_click_emits_down_then_up() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f); // fast roll left
     rig.run(100);
     rig.spike(+150.0f, 0.0f); // fast roll back
@@ -35,7 +35,7 @@ static void test_left_click_emits_down_then_up() {
 
 static void test_right_click_emits_down_then_up() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(+150.0f, 0.0f);
     rig.run(100);
     rig.spike(-150.0f, 0.0f);
@@ -47,7 +47,7 @@ static void test_right_click_emits_down_then_up() {
 
 static void test_middle_click_emits_down_then_up() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(0.0f, -150.0f); // pitch forward
     rig.run(100);
     rig.spike(0.0f, +150.0f);
@@ -59,7 +59,7 @@ static void test_middle_click_emits_down_then_up() {
 
 static void test_gyro_below_threshold_is_not_a_click() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-99.0f, 0.0f);
     rig.spike(0.0f, -100.0f); // threshold is strictly greater than 100
     rig.spike(0.0f, +150.0f); // pitch BACK never presses Middle
@@ -69,7 +69,7 @@ static void test_gyro_below_threshold_is_not_a_click() {
 
 static void test_slow_return_keeps_button_held_for_drag() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f);
     rig.gx = 40.0f; // slow roll back: below threshold, must NOT release
     rig.run(2000);
@@ -80,7 +80,7 @@ static void test_slow_return_keeps_button_held_for_drag() {
 
 static void test_release_lockout_blocks_immediate_re_press() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f);
     rig.run(100);
     rig.spike(+150.0f, 0.0f); // release at t0
@@ -95,7 +95,7 @@ static void test_release_lockout_blocks_immediate_re_press() {
 static void test_no_on_device_double_click() {
     // Two quick clicks are reported as two independent down/up pairs -- nothing synthesised.
     Rig rig;
-    rig.run(500);
+    rig.boot();
     for (int i = 0; i < 2; ++i) {
         rig.spike(-150.0f, 0.0f);
         rig.run(60);
@@ -111,7 +111,7 @@ static void test_no_on_device_double_click() {
 
 static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
 
     rig.ax = 0.9f; // 11.7 units: below start (13)
     rig.run(500);
@@ -151,10 +151,10 @@ static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
 
 static void test_scroll_ticks_have_direction_and_rate() {
     Rig rig;
-    rig.run(500);
-    rig.yaw = 30.0f; // 63 units -> 18.9 ticks/s
+    rig.boot();
+    rig.yaw = 30.0f; // 47 units (SCROLL_SCALE = 127/80, #1181) -> ~14.1 ticks/s
     rig.run(1000);
-    TEST_ASSERT_INT_WITHIN(1, 19, rig.sink.scrollTotal());
+    TEST_ASSERT_INT_WITHIN(1, 14, rig.sink.scrollTotal());
     for (const auto &e: rig.sink.events) TEST_ASSERT_TRUE(e.type == Type::Scroll && e.ticks > 0);
 
     rig.yaw = 0.0f; // back to centre: stops
@@ -165,26 +165,85 @@ static void test_scroll_ticks_have_direction_and_rate() {
 
     rig.yaw = -30.0f;
     rig.run(1000);
-    TEST_ASSERT_INT_WITHIN(1, -19, rig.sink.scrollTotal());
+    TEST_ASSERT_INT_WITHIN(1, -14, rig.sink.scrollTotal());
 
-    // Below the start threshold (16 units ~ 7.6 deg): no scrolling at all.
+    // Below the engage threshold (~10 deg, #1181, Edgar's Schmitt-trigger spec): no scrolling.
     Rig quiet;
-    quiet.run(500);
+    quiet.boot();
     quiet.yaw = 7.0f;
     quiet.run(2000);
     TEST_ASSERT_EQUAL_INT(0, quiet.sink.count(Type::Scroll));
 }
 
+/**
+ * The Schmitt trigger itself (#1181, Edgar: "engage going up stays off until abs(angle) hits
+ * 10, but once engaged, don't disengage again until abs(angle) drops back down to about 5" --
+ * a real deadzone, not a single threshold). Exercises exactly the gap a single threshold would
+ * get wrong: a value that would never re-trigger a naive ">10" check but also must not be
+ * treated as "stopped" once already engaged.
+ */
+static void test_scroll_engage_disengage_has_a_real_deadzone() {
+    Rig rig;
+    rig.boot();
+
+    rig.yaw = 10.0f; // AT the engage threshold, not past it: must not engage yet
+    rig.run(500);
+    TEST_ASSERT_EQUAL_INT(0, rig.sink.count(Type::Scroll));
+    TEST_ASSERT_FALSE(rig.mouse.isScrollWheelActive());
+
+    rig.yaw = 11.0f; // past 10: engages
+    rig.run(500);
+    TEST_ASSERT_TRUE(rig.mouse.isScrollWheelActive());
+    TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.count(Type::Scroll));
+
+    // The deadzone itself: 7 deg is below the 10-deg engage point (never engages a resting
+    // board from here) but ABOVE the ~5-deg disengage point -- once already engaged, it must
+    // stay engaged, not chatter off because it dropped below 10.
+    rig.yaw = 7.0f;
+    rig.run(500);
+    TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), "must stay engaged inside the deadzone");
+
+    rig.yaw = 4.0f; // below ~5: now it disengages
+    rig.run(500);
+    TEST_ASSERT_FALSE(rig.mouse.isScrollWheelActive());
+
+    // And confirm 7 deg alone, from a cold/disengaged start, never engages it either.
+    Rig rig2;
+    rig2.boot();
+    rig2.yaw = 7.0f;
+    rig2.run(2000);
+    TEST_ASSERT_FALSE(rig2.mouse.isScrollWheelActive());
+}
+
+/**
+ * GestureDetector::SCROLL_ENGAGE_DEG/SCROLL_DISENGAGE_DEG document the intended degree
+ * thresholds; Mouse::ANGLE_THRESHOLD_START/STOP are the actual report-unit enforcement (Mouse
+ * has no notion of degrees). This guards them from drifting apart -- e.g. if
+ * MAX_SCROLL_ANGLE_DEG is retuned later ("tunable later", #1181, Edgar) without recomputing
+ * Mouse's thresholds to match.
+ */
+static void test_scroll_engage_disengage_thresholds_match_mouse_hysteresis() {
+    // Mouse engages once its truncated report angle EXCEEDS ANGLE_THRESHOLD_START, i.e. first
+    // becomes (START + 1); it disengages once the report angle drops below STOP, i.e. last
+    // holds (STOP - 1). Those integer crossings, converted back to degrees, are the true
+    // behavioural thresholds -- not START/STOP divided by the scale directly, which land up to
+    // one report-unit (~0.63 deg at MAX_SCROLL_ANGLE_DEG = 80) short/over.
+    const float engageDeg = static_cast<float>(Mouse::ANGLE_THRESHOLD_START + 1) / GestureDetector::SCROLL_SCALE;
+    const float disengageDeg = static_cast<float>(Mouse::ANGLE_THRESHOLD_STOP) / GestureDetector::SCROLL_SCALE;
+    TEST_ASSERT_FLOAT_WITHIN(0.7f, GestureDetector::SCROLL_ENGAGE_DEG, engageDeg);
+    TEST_ASSERT_FLOAT_WITHIN(0.7f, GestureDetector::SCROLL_DISENGAGE_DEG, disengageDeg);
+}
+
 static void test_scroll_suppressed_while_button_held_and_buttons_suppressed_while_scrolling() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f); // left down
     rig.yaw = 30.0f;
     rig.run(1000);
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(Type::Scroll));
 
     Rig rig2;
-    rig2.run(500);
+    rig2.boot();
     rig2.yaw = 30.0f;
     rig2.run(200);
     rig2.spike(-150.0f, 0.0f); // ignored: scroll has priority
@@ -195,7 +254,7 @@ static void test_scroll_suppressed_while_button_held_and_buttons_suppressed_whil
 
 static void test_drag_sequence_produces_down_moves_up() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f);
     rig.ax = 2.0f;
     rig.run(400);
@@ -271,21 +330,23 @@ static void test_full_chain_gestures_to_hid_reports_via_fanout() {
         t += 20;
         detector.process(s);
     };
-    for (int i = 0; i < 10; ++i) feed(0, 0, 0);
+    // Warm-up + settling (#1181): seeding now averages Calibration::SETTLING_SAMPLES genuinely
+    // still samples instead of taking just one.
+    for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES + Calibration::SETTLING_SAMPLES; ++i) feed(0, 0, 0);
     feed(-150, 0, 0); // left down
     for (int i = 0; i < 5; ++i) feed(0, 0, 0);
     feed(+150, 0, 0); // left up
     for (int i = 0; i < 20; ++i) feed(0, 0, 0);
     for (int i = 0; i < 5; ++i) feed(0, 3.0f, 0); // move right
     for (int i = 0; i < 20; ++i) feed(0, 0, 0);
-    for (int i = 0; i < 50; ++i) feed(0, 0, 30.0f); // scroll up
+    for (int i = 0; i < 50; ++i) feed(0, 0, 30.0f); // scroll up: 30 deg -> 47 units -> ~14.1 ticks/s (#1181)
 
     TEST_ASSERT_EQUAL_HEX8(0x01, sent.at(0)[0]);
     TEST_ASSERT_EQUAL_HEX8(0x00, sent.at(1)[0]);
     TEST_ASSERT_EQUAL_INT(38, static_cast<int8_t>(sent.at(2)[1]));
     int wheel = 0;
     for (const auto &r: sent) wheel += static_cast<int8_t>(r[3]);
-    TEST_ASSERT_INT_WITHIN(1, 19, wheel);
+    TEST_ASSERT_INT_WITHIN(1, 14, wheel);
     // Every event reached both sinks.
     TEST_ASSERT_EQUAL_INT(1, led.count(Type::Down));
     TEST_ASSERT_EQUAL_INT(1, led.count(Type::Up));
@@ -304,6 +365,8 @@ int main() {
     RUN_TEST(test_no_on_device_double_click);
     RUN_TEST(test_movement_deltas_follow_calibrated_tilt_with_hysteresis);
     RUN_TEST(test_scroll_ticks_have_direction_and_rate);
+    RUN_TEST(test_scroll_engage_disengage_has_a_real_deadzone);
+    RUN_TEST(test_scroll_engage_disengage_thresholds_match_mouse_hysteresis);
     RUN_TEST(test_scroll_suppressed_while_button_held_and_buttons_suppressed_while_scrolling);
     RUN_TEST(test_drag_sequence_produces_down_moves_up);
     RUN_TEST(test_hid_report_layout);

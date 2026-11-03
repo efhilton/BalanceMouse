@@ -30,9 +30,12 @@ static MotionSample sampleOf(const float ax, const float ay, const float yaw, co
 
 // ---------------- Calibration class on its own ----------------
 
-/** Feed the warm-up plus one seeding sample, i.e. "power on in this state". */
+/**
+ * Feed the warm-up plus enough settling samples to seed, i.e. "power on in this state".
+ * Seeding averages Calibration::SETTLING_SAMPLES plausible samples, not just one (#1181).
+ */
 static void seed(Calibration &c, const MotionSample &s) {
-    for (int i = 0; i <= Calibration::DEFAULT_WARMUP_SAMPLES; ++i) c.observe(s);
+    for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES + Calibration::SETTLING_SAMPLES; ++i) c.observe(s);
     TEST_ASSERT_TRUE(c.isSeeded());
 }
 
@@ -47,9 +50,17 @@ static void test_seeds_both_baselines_after_warmup() {
         TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltY());
         TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedYaw());
     }
+    // Seeding now averages SETTLING_SAMPLES plausible samples instead of taking just one
+    // (#1181) -- still not seeded until the last of them arrives.
+    for (int i = 0; i < Calibration::SETTLING_SAMPLES - 1; ++i) {
+        c.observe(sampleOf(1.5f, -2.0f, 33.0f));
+        TEST_ASSERT_FALSE(c.isSeeded());
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltX());
+    }
     c.observe(sampleOf(1.5f, -2.0f, 33.0f));
     TEST_ASSERT_TRUE(c.isSeeded());
     TEST_ASSERT_EQUAL_INT(Calibration::DEFAULT_WARMUP_SAMPLES, c.samplesRejectedBeforeSeed());
+    // Every averaged sample was identical, so the average is exact, not just close.
     TEST_ASSERT_EQUAL_FLOAT(1.5f, c.tiltBaselineX());
     TEST_ASSERT_EQUAL_FLOAT(-2.0f, c.tiltBaselineY());
     TEST_ASSERT_EQUAL_FLOAT(33.0f, c.yawBaseline());
@@ -61,11 +72,11 @@ static void test_adapts_only_when_idle() {
     Calibration c;
     seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(1.0f, 1.0f, 10.0f));
-    for (int i = 0; i < 1000; ++i) c.adapt(0.02f, false);
+    for (int i = 0; i < 1000; ++i) c.adapt(0.02f, false, false);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tiltBaselineX());
     TEST_ASSERT_EQUAL_FLOAT(0.0f, c.yawBaseline());
 
-    c.adapt(0.02f, true);
+    c.adapt(0.02f, true, true);
     TEST_ASSERT_TRUE(c.tiltBaselineX() > 0.0f && c.tiltBaselineX() < 0.01f); // one slow step
     TEST_ASSERT_TRUE(c.yawBaseline() > 0.0f && c.yawBaseline() < 0.1f);
 }
@@ -75,14 +86,47 @@ static void test_time_constant_is_slow_and_exponential() {
     Calibration c(5.0f, 5.0f);
     seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(1.0f, 0, 10.0f));
-    for (int i = 0; i < 250; ++i) c.adapt(0.02f, true); // 5 s at 50 Hz
+    for (int i = 0; i < 250; ++i) c.adapt(0.02f, true, true); // 5 s at 50 Hz
     TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.632f, c.tiltBaselineX());
     TEST_ASSERT_FLOAT_WITHIN(0.05f, 6.32f, c.yawBaseline());
     // Zero / negative dt never moves it.
     const float before = c.tiltBaselineX();
-    c.adapt(0.0f, true);
-    c.adapt(-1.0f, true);
+    c.adapt(0.0f, true, true);
+    c.adapt(-1.0f, true, true);
     TEST_ASSERT_EQUAL_FLOAT(before, c.tiltBaselineX());
+}
+
+/**
+ * adapt()'s two idle flags are independently honoured, not just independently NAMED (#1181,
+ * Edgar's real-hardware find motivated splitting them -- see Calibration::adapt()'s doc
+ * comment). Positive/negative on each flag, checked against the OTHER baseline too so a bug
+ * that silently applies one flag to both filters would be caught.
+ */
+static void test_tilt_idle_and_yaw_idle_flags_are_independently_honoured() {
+    Calibration c;
+    seed(c, sampleOf(0, 0, 0));
+    c.observe(sampleOf(1.0f, 1.0f, 10.0f));
+
+    // tiltIdle only: tilt moves, yaw does not.
+    c.adapt(0.02f, true, false);
+    TEST_ASSERT_TRUE(c.tiltBaselineX() > 0.0f);
+    TEST_ASSERT_TRUE(c.tiltBaselineY() > 0.0f);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, c.yawBaseline());
+
+    // yawIdle only: yaw moves, tilt stays exactly where tiltIdle left it.
+    const float tiltXAfterFirstStep = c.tiltBaselineX();
+    const float tiltYAfterFirstStep = c.tiltBaselineY();
+    c.adapt(0.02f, false, true);
+    TEST_ASSERT_EQUAL_FLOAT(tiltXAfterFirstStep, c.tiltBaselineX());
+    TEST_ASSERT_EQUAL_FLOAT(tiltYAfterFirstStep, c.tiltBaselineY());
+    TEST_ASSERT_TRUE(c.yawBaseline() > 0.0f);
+
+    // Neither: nothing moves.
+    const float tiltXBefore = c.tiltBaselineX();
+    const float yawBefore = c.yawBaseline();
+    c.adapt(0.02f, false, false);
+    TEST_ASSERT_EQUAL_FLOAT(tiltXBefore, c.tiltBaselineX());
+    TEST_ASSERT_EQUAL_FLOAT(yawBefore, c.yawBaseline());
 }
 
 static void test_tilt_and_yaw_baselines_are_independent() {
@@ -90,7 +134,7 @@ static void test_tilt_and_yaw_baselines_are_independent() {
     Calibration c(1.0f, 100.0f);
     seed(c, sampleOf(0, 0, 0));
     c.observe(sampleOf(1.0f, -1.0f, 10.0f));
-    for (int i = 0; i < 250; ++i) c.adapt(0.02f, true); // 5 s
+    for (int i = 0; i < 250; ++i) c.adapt(0.02f, true, true); // 5 s
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, c.tiltBaselineX()); // 5 tau -> ~99.3%
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -1.0f, c.tiltBaselineY());
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.49f, c.yawBaseline()); // 0.05 tau -> ~4.9%
@@ -99,7 +143,7 @@ static void test_tilt_and_yaw_baselines_are_independent() {
     Calibration d;
     seed(d, sampleOf(0.2f, 0.3f, 0));
     d.observe(sampleOf(0.2f, 0.3f, 12.0f));
-    for (int i = 0; i < 500; ++i) d.adapt(0.02f, true);
+    for (int i = 0; i < 500; ++i) d.adapt(0.02f, true, true);
     TEST_ASSERT_EQUAL_FLOAT(0.2f, d.tiltBaselineX());
     TEST_ASSERT_EQUAL_FLOAT(0.3f, d.tiltBaselineY());
     TEST_ASSERT_TRUE(d.yawBaseline() > 10.0f);
@@ -157,9 +201,11 @@ static void test_short_press_rezero_through_detector_stops_movement_and_scroll_i
 
 static void test_power_on_in_a_non_level_stance_is_zero() {
     Rig rig;
-    rig.ax = 3.0f; // ~18 degrees of roll at power-on: would be full-on movement without seeding
+    rig.ax = 3.0f; // ~18 degrees of lean on the X (left/right) channel at power-on: would be
+                   // full-on movement without seeding
     rig.ay = -2.0f;
     rig.yaw = 25.0f;
+    rig.boot(); // seeding takes longer now (averages SETTLING_SAMPLES, #1181) but stays silent
     rig.run(2000);
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Move));
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Scroll));
@@ -176,11 +222,11 @@ static void test_power_on_in_a_non_level_stance_is_zero() {
  */
 static void test_non_level_resting_stance_converges_and_centres_output() {
     Rig rig;
-    rig.run(1000); // boot level, seeded at 0
+    rig.boot(); // boot level, seeded at 0
 
     constexpr float REST_X{0.70f}; // 0.70*12.96 = 9.1 units  (start threshold 13)
     constexpr float REST_Y{-0.60f}; // |(9.1, -7.8)| = 12.0 units -> still below 13
-    constexpr float REST_YAW{6.0f}; // 6*127/60 = 12.7 units (start threshold 16)
+    constexpr float REST_YAW{6.0f}; // 6*127/80 = 9.5 units (start threshold 15, #1181)
     uint32_t noise = 12345;
     auto jitter = [&noise](const float amplitude) {
         noise = noise * 1103515245u + 12345u;
@@ -255,7 +301,7 @@ static void test_non_level_resting_stance_converges_and_centres_output() {
 
 static void test_held_drag_is_not_absorbed() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f); // fast roll left -> Left button down
     TEST_ASSERT_TRUE(rig.mouse.isButtonPressed(MouseButtonStateMachine::Button::Left));
 
@@ -275,8 +321,8 @@ static void test_held_drag_is_not_absorbed() {
 
 static void test_sustained_scroll_is_not_absorbed() {
     Rig rig;
-    rig.run(500);
-    rig.yaw = 20.0f; // 42 units: scrolling
+    rig.boot();
+    rig.yaw = 20.0f; // 31 units (SCROLL_SCALE = 127/80, #1181): scrolling
     rig.run(1000);
     const int firstSecond = rig.sink.scrollTotal();
     rig.run(18000);
@@ -293,7 +339,7 @@ static void test_sustained_scroll_is_not_absorbed() {
 
 static void test_sustained_movement_is_not_absorbed() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.ax = 2.0f;
     rig.run(20000);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, rig.calibration.tiltBaselineX());
@@ -302,7 +348,7 @@ static void test_sustained_movement_is_not_absorbed() {
 
 static void test_idle_between_gestures_resumes_adaptation() {
     Rig rig;
-    rig.run(500);
+    rig.boot();
     rig.spike(-150.0f, 0.0f); // left down
     rig.ax = 0.5f;
     rig.run(2000);
@@ -342,14 +388,61 @@ static void test_zero_startup_samples_are_never_used_as_the_baseline() {
     MotionSample rest{};
     rest.accel = {HW_REST_X, HW_REST_Y, HW_REST_Z};
     rest.yaw = 0.4f;
+    // Seeding now averages SETTLING_SAMPLES plausible samples instead of taking just one (#1181).
+    for (int i = 0; i < Calibration::SETTLING_SAMPLES - 1; ++i) {
+        c.observe(rest);
+        TEST_ASSERT_FALSE(c.isSeeded());
+    }
     c.observe(rest);
     TEST_ASSERT_TRUE(c.isSeeded());
     TEST_ASSERT_EQUAL_INT(ZERO_SAMPLES, c.samplesRejectedBeforeSeed());
-    TEST_ASSERT_EQUAL_FLOAT(HW_REST_X, c.tiltBaselineX());
-    TEST_ASSERT_EQUAL_FLOAT(HW_REST_Y, c.tiltBaselineY());
+    // WITHIN, not EQUAL: HW_REST_X/Y are not exact binary fractions, so averaging 500 copies
+    // (#1181) accumulates a little float-summation rounding (same reasoning as below).
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, HW_REST_X, c.tiltBaselineX());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, HW_REST_Y, c.tiltBaselineY());
     TEST_ASSERT_EQUAL_FLOAT(0.4f, c.yawBaseline());
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltX());
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, c.calibratedTiltY());
+    // Within float-summation noise of zero, not bit-exact: averaging 500 samples (#1181)
+    // accumulates a little float rounding that a single-sample seed never had to deal with.
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, c.calibratedTiltX());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, c.calibratedTiltY());
+}
+
+/**
+ * Scope clarification (#1181, Edgar/Maria, 2026-11-02): the settling average must cover all
+ * three axes -- X and Y (tilt, cursor movement) AND Z (yaw, scroll) -- not just tilt. The
+ * implementation already satisfies this by construction: tiltX/tiltY/yaw share one settling
+ * accumulator inside a single Calibration::observe() call (see settleSumTiltX/Y/Yaw in
+ * Calibration.hpp), so there is no code path that seeds tilt without also seeding yaw the same
+ * way. But every settling test above happens to hold yaw CONSTANT across the window, which
+ * would pass identically even if yaw were (bug) seeded from one sample instead of averaged.
+ * This test varies yaw sample-by-sample across the whole window and checks the seeded baseline
+ * lands on the arithmetic mean of what was fed -- not the first sample, not the last -- proving
+ * yaw genuinely goes through the same running average as tilt, not a shortcut.
+ */
+static void test_settling_average_includes_varying_yaw_not_just_tilt() {
+    Calibration c;
+    for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES; ++i) c.observe(sampleOf(0, 0, 0));
+    TEST_ASSERT_FALSE(c.isSeeded());
+
+    double yawSum = 0.0; // double accumulator for a precise reference mean, independent of the
+                          // float summation under test
+    constexpr float YAW_START{10.0f};
+    constexpr float YAW_STEP{0.01f};
+    for (int i = 0; i < Calibration::SETTLING_SAMPLES; ++i) {
+        const float yaw = YAW_START + YAW_STEP * static_cast<float>(i); // ramps across the window
+        yawSum += yaw;
+        c.observe(sampleOf(1.2f, -0.8f, yaw));
+    }
+    TEST_ASSERT_TRUE(c.isSeeded());
+    const float expectedYaw = static_cast<float>(yawSum / Calibration::SETTLING_SAMPLES);
+    const float lastYaw = YAW_START + YAW_STEP * static_cast<float>(Calibration::SETTLING_SAMPLES - 1);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, expectedYaw, c.yawBaseline());
+    // Not the first sample fed, and not the last -- the true mean of the whole ramp.
+    TEST_ASSERT_TRUE(c.yawBaseline() > YAW_START + 0.1f);
+    TEST_ASSERT_TRUE(c.yawBaseline() < lastYaw - 0.1f);
+    // Tilt (held constant here) still seeds correctly alongside it.
+    TEST_ASSERT_EQUAL_FLOAT(1.2f, c.tiltBaselineX());
+    TEST_ASSERT_EQUAL_FLOAT(-0.8f, c.tiltBaselineY());
 }
 
 static void test_plausible_resting_sample_window() {
@@ -370,6 +463,84 @@ static void test_plausible_resting_sample_window() {
     s.accel = {0, 0, 9.81f};
     s.yaw = std::nanf("");
     TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+
+    // Gravity-plausible but still rotating (e.g. being carried/rotated during power-on or BLE
+    // pairing) must NOT count as a resting sample, even though the magnitude alone looks fine.
+    s.accel = {0, 0, 9.81f};
+    s.yaw = 0.0f;
+    s.gyro = {0, 0, 0};
+    TEST_ASSERT_TRUE(Calibration::isPlausibleRestingSample(s));
+    s.gyro = {40.0f, 0, 0};
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+    s.gyro = {0, 0, 40.0f};
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+    s.gyro = {Calibration::MAX_SEED_GYRO_DPS - 0.1f, 0, 0}; // just under the limit: still resting
+    TEST_ASSERT_TRUE(Calibration::isPlausibleRestingSample(s));
+    s.gyro = {Calibration::MAX_SEED_GYRO_DPS + 0.1f, 0, 0}; // just over: rejected
+    TEST_ASSERT_FALSE(Calibration::isPlausibleRestingSample(s));
+}
+
+/**
+ * Real hardware finding (#1181, Edgar's BLE/LED bring-up pass): the board was still being
+ * handled (rotated into position for BLE pairing) when its warm-up elapsed. The old seeding
+ * rule (gravity magnitude alone) happily seeded from that mid-handling sample, baking in an
+ * angle well away from the board's real resting stance. Because that offset read as larger
+ * than the movement START threshold, it was deliberately never adapted away (the same
+ * protection that keeps a genuine sustained drag/lean from being absorbed, see
+ * test_sustained_movement_is_not_absorbed) -- confirmed live: the board sat forever reporting
+ * a large constant deltaX/deltaY and an off-centre LED ball, with no automatic recovery.
+ *
+ * Fix under test: seeding now also requires the gyro to show no rotation, so a mid-handling
+ * sample is rejected (not counted toward the SETTLING_SAMPLES average, see Calibration's
+ * class doc, #1181) and the baseline is only averaged from samples once the board is
+ * genuinely still.
+ */
+static void test_seeding_while_still_being_handled_is_rejected_until_genuinely_still() {
+    Rig rig;
+    // Phase 1: warm-up elapses while the board is being rotated into its final position for
+    // pairing -- gravity-plausible at every instant, but actively rotating.
+    for (int i = 0; i <= Calibration::DEFAULT_WARMUP_SAMPLES; ++i) {
+        rig.ax = 3.0f; // a gravity-plausible but very much NOT-final angle
+        rig.ay = -2.0f;
+        rig.gx = 60.0f; // clearly rotating
+        rig.step();
+        TEST_ASSERT_FALSE_MESSAGE(rig.calibration.isSeeded(), "must not seed while still rotating");
+    }
+    // A couple more seconds of continued handling: still must not seed, and none of it counts
+    // toward settling (every one of these samples fails the gyro check).
+    for (int i = 0; i < 100; ++i) {
+        rig.ax = 1.0f + 0.02f * static_cast<float>(i); // angle still changing
+        rig.ay = -1.0f;
+        rig.gx = 30.0f;
+        rig.step();
+        TEST_ASSERT_FALSE(rig.calibration.isSeeded());
+        TEST_ASSERT_EQUAL_INT(0, rig.calibration.settledSampleCount());
+    }
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size())); // nothing emitted while unseeded
+
+    // Phase 2: the board is set down and comes to rest at ITS real stance -- gyro settles to ~0.
+    // None of Phase 1's rotating samples contributed, so the average is exactly the real rest.
+    rig.ax = 0.70f;
+    rig.ay = -0.60f;
+    rig.gx = 0.0f;
+    for (int i = 0; i < Calibration::SETTLING_SAMPLES - 1; ++i) {
+        rig.step();
+        TEST_ASSERT_FALSE_MESSAGE(rig.calibration.isSeeded(), "settling takes SETTLING_SAMPLES, not one");
+    }
+    rig.step();
+    TEST_ASSERT_TRUE_MESSAGE(rig.calibration.isSeeded(), "must seed once genuinely still for long enough");
+    TEST_ASSERT_EQUAL_FLOAT(0.70f, rig.calibration.tiltBaselineX());
+    TEST_ASSERT_EQUAL_FLOAT(-0.60f, rig.calibration.tiltBaselineY());
+
+    // The real stance now reads as centred, immediately and from then on -- no permanent
+    // phantom movement, no off-centre idle display.
+    rig.run(2000);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, rig.detector.getCalibratedTiltX());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, rig.detector.getCalibratedTiltY());
+    TEST_ASSERT_EQUAL_INT(0, rig.mouse.getMovement().deltaX);
+    TEST_ASSERT_EQUAL_INT(0, rig.mouse.getMovement().deltaY);
+    TEST_ASSERT_FALSE(rig.mouse.isMoving());
+    TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Move));
 }
 
 /**
@@ -404,14 +575,19 @@ static void test_garbage_startup_samples_then_real_rest_produces_no_phantom_move
         noise = noise * 1103515245u + 12345u;
         return amplitude * (static_cast<float>((noise >> 16) & 0x7FFF) / 16383.5f - 1.0f);
     };
-    for (int i = 0; i < 3000; ++i) {
+    // Seeding now averages SETTLING_SAMPLES plausible samples instead of taking just one
+    // (#1181) -- so it is not seeded from the very first sample of this phase; only assert
+    // wasIdle() once it actually is.
+    for (int i = 0; i < Calibration::SETTLING_SAMPLES + 2500; ++i) {
         rig.ax = HW_REST_X + jitter(0.03f);
         rig.ay = HW_REST_Y + jitter(0.03f);
         rig.az = HW_REST_Z + jitter(0.03f);
         rig.step();
-        TEST_ASSERT_TRUE(rig.calibration.isSeeded());
-        TEST_ASSERT_TRUE_MESSAGE(rig.detector.wasIdle(), "untouched board at its real rest must count as idle");
+        if (rig.calibration.isSeeded()) {
+            TEST_ASSERT_TRUE_MESSAGE(rig.detector.wasIdle(), "untouched board at its real rest must count as idle");
+        }
     }
+    TEST_ASSERT_TRUE(rig.calibration.isSeeded());
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Move));
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(RecordedEvent::Type::Scroll));
     TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size()));
@@ -437,6 +613,57 @@ static void test_garbage_startup_samples_then_real_rest_produces_no_phantom_move
     TEST_ASSERT_GREATER_THAN_INT(0, rig.sink.count(RecordedEvent::Type::Move));
 }
 
+/**
+ * Real-hardware bug (#1181, Edgar): with the board sitting completely untouched, the live
+ * serial VERIFY log showed calibratedYaw drifting ~0.5-0.6 deg/s on its own -- gyro Z has no
+ * accelerometer-style absolute reference, so its integration drifts unboundedly even at rest.
+ * Once that drift alone pushed calibratedYaw past the scroll ENGAGE threshold, the scroll
+ * wheel latched active and, under the OLD code (one shared `idle` flag requiring
+ * !mouse.isScrollWheelActive()), yaw-baseline adaptation was blocked from then on -- a one-way
+ * ratchet that never recovers by itself.
+ *
+ * The fix is NOT a gradual EMA correction while stuck -- that was tried first and discarded: no
+ * time constant is simultaneously negligible over test_sustained_scroll_is_not_absorbed's 20 s
+ * window and fast enough to be a useful recovery (see Calibration::adapt()'s doc comment). It
+ * is a one-time, decisive snap (Calibration::snapYawToRaw()) fired once "wheel active, nothing
+ * else going on, gyro quiet" has persisted continuously for longer than
+ * GestureDetector::STUCK_SCROLL_RECOVERY_S (60 s) -- see its own doc comment. This reproduces
+ * the drift-into-saturation scenario directly (not via real integration, which isn't modelled
+ * here -- `rig.yaw` is just set to a drifted value, the same as if gyro integration had
+ * produced it), proves NOTHING changes right up to the timeout (still fully stuck just under it,
+ * mirroring the "never absorbed" guarantee the normal path already has), and proves the wheel
+ * un-sticks immediately once the timeout is crossed, with the gyro reading quiet (rig.gz stays
+ * 0) throughout -- exactly what a slow constant bias looks like moment to moment.
+ */
+static void test_yaw_baseline_self_corrects_drift_even_while_scroll_latched_active() {
+    Rig rig;
+    rig.boot(); // seeded at yaw=0, level, gyro quiet
+
+    // Drift has already pushed yaw past the engage threshold (10 deg): 60 deg -> 95 report
+    // units, latching the scroll wheel active.
+    rig.yaw = 60.0f;
+    rig.step();
+    TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), "drifted yaw should have engaged the scroll wheel");
+
+    // Comfortably under the recovery timeout (60 s): still fully stuck, baseline untouched --
+    // same "never absorbed" guarantee as a real sustained scroll. Stops at 50 s, not right at
+    // the 60 s edge, to leave headroom for float accumulation error in the running dt sum (the
+    // exact crossing step is not the point under test -- that it hasn't moved AT ALL well
+    // before the timeout is).
+    for (int i = 0; i < 2499; ++i) rig.step(); // ~50 s more
+    TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), "must still be stuck well under the recovery timeout");
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, rig.calibration.yawBaseline());
+
+    // Cross the timeout (another 12 s, well past the 60 s mark with margin): the snap fires,
+    // and the Schmitt trigger disengages (calibratedYaw ~0) on the step after that.
+    for (int i = 0; i < 600; ++i) rig.step();
+
+    TEST_ASSERT_FALSE_MESSAGE(rig.mouse.isScrollWheelActive(),
+                               "yaw baseline must snap-correct the drift and release the scroll latch");
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 60.0f, rig.calibration.yawBaseline());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, rig.detector.getCalibratedYaw());
+}
+
 static void test_rezero_during_warmup_does_not_seed_from_garbage() {
     // A BOOT short press while the IMU is still producing zeros must not snap the baseline to them.
     Rig rig;
@@ -448,10 +675,12 @@ static void test_rezero_during_warmup_does_not_seed_from_garbage() {
     rig.ax = HW_REST_X;
     rig.ay = HW_REST_Y;
     rig.az = HW_REST_Z;
-    rig.run(2000);
+    rig.boot(); // seeding now averages SETTLING_SAMPLES plausible samples (#1181)
     TEST_ASSERT_TRUE(rig.calibration.isSeeded());
-    TEST_ASSERT_EQUAL_FLOAT(HW_REST_X, rig.calibration.tiltBaselineX());
-    TEST_ASSERT_EQUAL_FLOAT(HW_REST_Y, rig.calibration.tiltBaselineY());
+    // WITHIN, not EQUAL: averaging 500 copies of a non-exact-binary float (#1181) accumulates
+    // a little float-summation rounding that a single-sample seed never had to deal with.
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, HW_REST_X, rig.calibration.tiltBaselineX());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, HW_REST_Y, rig.calibration.tiltBaselineY());
     TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size()));
 }
 
@@ -460,6 +689,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_seeds_both_baselines_after_warmup);
     RUN_TEST(test_adapts_only_when_idle);
+    RUN_TEST(test_tilt_idle_and_yaw_idle_flags_are_independently_honoured);
     RUN_TEST(test_time_constant_is_slow_and_exponential);
     RUN_TEST(test_tilt_and_yaw_baselines_are_independent);
     RUN_TEST(test_rezero_is_immediate);
@@ -471,8 +701,11 @@ int main() {
     RUN_TEST(test_sustained_movement_is_not_absorbed);
     RUN_TEST(test_idle_between_gestures_resumes_adaptation);
     RUN_TEST(test_zero_startup_samples_are_never_used_as_the_baseline);
+    RUN_TEST(test_settling_average_includes_varying_yaw_not_just_tilt);
     RUN_TEST(test_plausible_resting_sample_window);
     RUN_TEST(test_garbage_startup_samples_then_real_rest_produces_no_phantom_movement);
+    RUN_TEST(test_yaw_baseline_self_corrects_drift_even_while_scroll_latched_active);
     RUN_TEST(test_rezero_during_warmup_does_not_seed_from_garbage);
+    RUN_TEST(test_seeding_while_still_being_handled_is_rejected_until_genuinely_still);
     return UNITY_END();
 }

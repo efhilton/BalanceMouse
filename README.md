@@ -95,7 +95,7 @@ Notes:
 ## Running Host Unit Tests (no hardware needed)
 
 The hardware-independent logic (gesture detection, calibration, HID report encoding, the LED renderer,
-the BOOT-button press classifier and the 50% LED intensity ceiling) lives in portable components
+the BOOT-button press classifier and the LED intensity ceiling) lives in portable components
 (`components/mouse`, `components/gestures`, `components/led_feedback`) and is unit tested on the host
 (x86/Linux) under `host_test/`, using Unity and AddressSanitizer + UndefinedBehaviorSanitizer.
 
@@ -121,9 +121,11 @@ From the repository root:
 
 ### LED matrix feedback
 
-All LEDs are capped at **50% intensity**. The cap is enforced inside `LightPixel` itself, so no code path can
-exceed it, because the matrix heats up quickly. Coordinates are as seen from the LED side with the USB-C
-connector at the top (see `components/led_feedback/include/MatrixLayout.hpp`).
+All LEDs are capped at **25% intensity** (lowered from the original 50% in #1181 after real-hardware testing
+found the unit running warmer than it should even while already compliant with that higher cap). The cap is
+enforced inside `LightPixel` itself (`Lights::MAX_INTENSITY_PERCENT`), so no code path can exceed it. Coordinates
+are as seen from the LED side with the USB-C connector at the top (see
+`components/led_feedback/include/MatrixLayout.hpp`).
 
 | State | Display |
 |---|---|
@@ -145,7 +147,11 @@ drives the cursor) and one for yaw (which drives the scroll wheel).
   sample: right after the IMU is reset its data registers can still read all-zero, which would make the board's
   real resting tilt look like a permanent lean (phantom cursor drift). The first 10 samples (~200 ms) are
   discarded, then the baseline is seeded from the first sample whose total acceleration is a plausible resting
-  reading (0.5 g to 1.5 g). Nothing is sent to the host until then.
+  reading (0.5 g to 1.5 g) **and** whose gyro shows no rotation (board genuinely motionless, not just held at
+  some gravity-plausible angle -- e.g. mid-handling while pairing). Nothing is sent to the host until then. The
+  gyro check was added in #1181 after a real-hardware finding: seeding from a gravity-plausible-but-moving
+  sample baked in whatever angle the board was at during handling, which (being a large offset) then could
+  never self-correct -- see the stance-change bullet below.
 - After that, each baseline slowly follows the resting position (exponential moving average, 5 s time
   constant), but **only while completely idle**: no button held, not moving, not scrolling, and both signals
   below their start thresholds. A held drag or a long scroll is therefore never absorbed into the baseline.
