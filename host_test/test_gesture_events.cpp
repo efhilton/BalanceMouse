@@ -2,8 +2,11 @@
 // sink (no hardware, no BLE). Also covers HID report encoding and the fan-out.
 #include "test_support.hpp"
 
+#include <FeedbackState.hpp>
 #include <MouseHidReport.hpp>
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <unity.h>
 
 using namespace Hilton;
@@ -113,7 +116,7 @@ static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
     Rig rig;
     rig.boot();
 
-    rig.ax = 0.9f; // 11.7 units: below start (13)
+    rig.ax = 0.9f; // curves to 9 units (11.7 on the linear idle gauge): below start (13), and idle
     rig.run(500);
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(Type::Move));
 
@@ -122,31 +125,146 @@ static void test_movement_deltas_follow_calibrated_tilt_with_hysteresis() {
     // which is frozen from here on because the board is moving.
     const float baseX = rig.calibration.tiltBaselineX();
     TEST_ASSERT_TRUE(baseX > 0.0f && baseX < 0.1f);
-    rig.ax = 3.0f; // ~38 units
-    rig.ay = -1.5f; // -19.4 units
+    // Deltas now go through the quadratic acceleration curve (#1181), full speed at
+    // MOVEMENT_FULL_SCALE_TILT (3.3552 m/s^2, 20 deg).
+    rig.ax = 3.0f; // n ~ 0.88 -> ~99 units
+    rig.ay = -1.5f; // n = 0.447 -> 0.1999 * 127 = 25.4 -> 25; Y is negated -> HID dy = +25
     rig.sink.clear();
     rig.run(200); // 10 samples
     TEST_ASSERT_EQUAL_INT(10, rig.sink.count(Type::Move));
-    const int expectedDx = static_cast<int>((3.0f - baseX) * GestureDetector::GRAVITY_SCALE);
-    TEST_ASSERT_INT_WITHIN(1, 37, expectedDx);
+    const int expectedDx = GestureDetector::movementDeltaFromTilt(3.0f - baseX);
+    TEST_ASSERT_INT_WITHIN(4, 99, expectedDx); // baseX in (0, 0.1) -> 95..102
     for (const auto &e: rig.sink.events) {
         TEST_ASSERT_EQUAL_INT(expectedDx, e.dx);
-        TEST_ASSERT_EQUAL_INT(-19, e.dy);
+        // Y is negated on the HID path (GestureDetector::handleMouseMovement, #1181):
+        // calibratedY < 0 -> dy > 0.
+        TEST_ASSERT_EQUAL_INT(+25, e.dy);
     }
     TEST_ASSERT_EQUAL_FLOAT(baseX, rig.calibration.tiltBaselineX());
 
-    rig.ax = 0.6f; // ~7 units: between stop (5) and start (13) -> keeps moving
+    // Between stop (5) and start (13) -> keeps moving. Under the curve that needs ~1.0 m/s^2
+    // (n ~ 0.29 -> ~11 units); the old linear 0.6 m/s^2 would now curve to ~4 (below stop).
+    rig.ax = 1.0f;
     rig.ay = 0.0f;
     rig.sink.clear();
     rig.run(100);
     TEST_ASSERT_EQUAL_INT(5, rig.sink.count(Type::Move));
-    TEST_ASSERT_EQUAL_INT(static_cast<int>((0.6f - baseX) * GestureDetector::GRAVITY_SCALE), rig.sink.events.back().dx);
+    const int expectedMidDx = GestureDetector::movementDeltaFromTilt(1.0f - baseX);
+    TEST_ASSERT_TRUE(expectedMidDx > Mouse::MOVEMENT_THRESHOLD_STOP && expectedMidDx < Mouse::MOVEMENT_THRESHOLD_START);
+    TEST_ASSERT_EQUAL_INT(expectedMidDx, rig.sink.events.back().dx);
 
-    rig.ax = 0.2f; // 2.6 units: below stop
+    rig.ax = 0.2f; // curves to 0 units: below stop
     rig.sink.clear();
     rig.run(500);
     TEST_ASSERT_EQUAL_INT(0, rig.sink.count(Type::Move));
     TEST_ASSERT_FALSE(rig.mouse.isMoving());
+}
+
+/**
+ * HID movement acceleration curve (#1181, Edgar: "the further we are away from the center, the
+ * more 'acceleration' the mouse should see"). Pins the default quadratic curve exactly. The
+ * exponent/full-scale are a feel-tuning starting point -- if they are retuned, update the
+ * expected numbers here deliberately.
+ */
+static void test_movement_acceleration_curve_shape() {
+    using G = GestureDetector;
+    constexpr float FULL = G::MOVEMENT_FULL_SCALE_TILT;
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, G::MOVEMENT_ACCEL_EXPONENT);
+
+    // Centre and saturation.
+    TEST_ASSERT_EQUAL_INT(0, G::movementDeltaFromTilt(0.0f));
+    TEST_ASSERT_EQUAL_INT(0, G::movementDeltaFromTilt(-0.0f));
+    TEST_ASSERT_EQUAL_INT(0, G::movementDeltaFromTilt(std::numeric_limits<float>::quiet_NaN()));
+    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(FULL));
+    TEST_ASSERT_EQUAL_INT(-127, G::movementDeltaFromTilt(-FULL));
+    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(2.0f * FULL));
+    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(9.81f));
+    TEST_ASSERT_EQUAL_INT(-127, G::movementDeltaFromTilt(-1.0e9f));
+    TEST_ASSERT_EQUAL_INT(127, G::movementDeltaFromTilt(std::numeric_limits<float>::infinity()));
+    TEST_ASSERT_EQUAL_INT(-127, G::movementDeltaFromTilt(-std::numeric_limits<float>::infinity()));
+
+    // Half of full tilt -> a QUARTER of full speed (quadratic): 0.25 * 127 = 31.75 -> 32.
+    TEST_ASSERT_EQUAL_INT(32, G::movementDeltaFromTilt(0.5f * FULL));
+    TEST_ASSERT_EQUAL_INT(-32, G::movementDeltaFromTilt(-0.5f * FULL));
+    // Quarter tilt -> 1/16: 7.94 -> 8. Three-quarter tilt -> 9/16: 71.4 -> 71.
+    TEST_ASSERT_EQUAL_INT(8, G::movementDeltaFromTilt(0.25f * FULL));
+    TEST_ASSERT_EQUAL_INT(71, G::movementDeltaFromTilt(0.75f * FULL));
+
+    // Fine control near centre: a small tilt gives disproportionately LESS than the old linear
+    // mapping (GRAVITY_SCALE * tilt, truncated). 0.5 m/s^2 (~2.9 deg): old 6, now 3.
+    const int oldSmall = static_cast<int>(G::GRAVITY_SCALE * 0.5f);
+    const int newSmall = G::movementDeltaFromTilt(0.5f);
+    TEST_ASSERT_EQUAL_INT(6, oldSmall);
+    TEST_ASSERT_EQUAL_INT(3, newSmall);
+    TEST_ASSERT_LESS_THAN_INT(oldSmall, newSmall);
+    // ...and disproportionately MORE out near full tilt: 3.0 m/s^2 (~17.8 deg): old 38, now 102.
+    TEST_ASSERT_EQUAL_INT(38, static_cast<int>(G::GRAVITY_SCALE * 3.0f));
+    TEST_ASSERT_EQUAL_INT(102, G::movementDeltaFromTilt(3.0f));
+
+    // Faster than linear: doubling the tilt (below full scale) roughly quadruples the output,
+    // and the curve is monotonic and exactly odd-symmetric (sign handled separately).
+    int previous = 0;
+    for (int i = 1; i <= 120; ++i) {
+        const float tilt = FULL * static_cast<float>(i) / 100.0f;
+        const int pos = G::movementDeltaFromTilt(tilt);
+        TEST_ASSERT_TRUE(pos >= previous);
+        TEST_ASSERT_TRUE(pos >= 0);
+        TEST_ASSERT_EQUAL_INT(-pos, G::movementDeltaFromTilt(-tilt));
+        previous = pos;
+    }
+    TEST_ASSERT_INT_WITHIN(1, 4 * G::movementDeltaFromTilt(0.2f * FULL), G::movementDeltaFromTilt(0.4f * FULL));
+}
+
+/** The curve and the sign mapping end to end, on BOTH axes (X passes through, Y is negated). */
+static void test_movement_curve_preserves_sign_on_both_axes() {
+    const float half = 0.5f * GestureDetector::MOVEMENT_FULL_SCALE_TILT;
+    const float small = 0.2f * GestureDetector::MOVEMENT_FULL_SCALE_TILT; // 0.04 * 127 = 5.1 -> 5
+    struct Case {
+        float ax, ay;
+        int dx, dy;
+    };
+    const Case cases[] = {
+        {+half, 0, +32, 0}, // tilt right   -> cursor right
+        {-half, 0, -32, 0}, // tilt left    -> cursor left
+        {0, +half, 0, -32}, // calibratedY > 0 -> dy < 0 (HID Y negated, #1181)
+        {0, -half, 0, +32}, // calibratedY < 0 -> dy > 0
+        {+half, -half, +32, +32}, // diagonal: both curves independent, signs independent
+        {-half, +half, -32, -32},
+    };
+    for (const auto &c: cases) {
+        Rig rig;
+        rig.boot();
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, rig.calibration.tiltBaselineX());
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, rig.calibration.tiltBaselineY());
+        rig.ax = c.ax;
+        rig.ay = c.ay;
+        rig.sink.clear();
+        rig.run(100);
+        TEST_ASSERT_EQUAL_INT(5, rig.sink.count(Type::Move));
+        for (const auto &e: rig.sink.events) {
+            TEST_ASSERT_EQUAL_INT(c.dx, e.dx);
+            TEST_ASSERT_EQUAL_INT(c.dy, e.dy);
+        }
+    }
+    // A small per-axis tilt curves to 5 per axis: hypot(5, 5) = 7.07 < start (13), so a small
+    // diagonal lean does not start movement -- fine control near centre.
+    TEST_ASSERT_EQUAL_INT(5, GestureDetector::movementDeltaFromTilt(small));
+    TEST_ASSERT_EQUAL_INT(-5, GestureDetector::movementDeltaFromTilt(-small));
+}
+
+/**
+ * MOVEMENT_FULL_SCALE_TILT (gestures) intentionally duplicates FeedbackRenderer's
+ * BALL_FULL_SCALE_TILT (led_feedback, which does not depend on gestures) so the cursor reaches
+ * full speed at the same tilt that puts the LED ball at the matrix edge. Fails if they drift
+ * apart, or if the m/s^2 value no longer matches its degree spec.
+ */
+static void test_movement_full_scale_matches_ball_full_scale() {
+    constexpr float PI = 3.14159265358979f;
+    TEST_ASSERT_EQUAL_FLOAT(FeedbackRenderer::BALL_FULL_SCALE_TILT_DEG, GestureDetector::MOVEMENT_FULL_SCALE_TILT_DEG);
+    TEST_ASSERT_EQUAL_FLOAT(FeedbackRenderer::BALL_FULL_SCALE_TILT, GestureDetector::MOVEMENT_FULL_SCALE_TILT);
+    const float expected = Calibration::STANDARD_GRAVITY_MS2
+                           * std::sin(GestureDetector::MOVEMENT_FULL_SCALE_TILT_DEG * PI / 180.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, expected, GestureDetector::MOVEMENT_FULL_SCALE_TILT);
 }
 
 static void test_scroll_ticks_have_direction_and_rate() {
@@ -299,7 +417,8 @@ static void test_report_builder_one_report_per_event_with_button_mask() {
     TEST_ASSERT_EQUAL_INT(-3, static_cast<int8_t>(sent[1][2]));
     TEST_ASSERT_EQUAL_HEX8(0x03, sent[2][0]);
     TEST_ASSERT_EQUAL_HEX8(0x03, sent[3][0]);
-    TEST_ASSERT_EQUAL_INT(-2, static_cast<int8_t>(sent[3][3]));
+    // Ticks are yaw-signed; the HID wheel byte is negated (MouseHidReportBuilder::onScroll).
+    TEST_ASSERT_EQUAL_INT(+2, static_cast<int8_t>(sent[3][3]));
     TEST_ASSERT_EQUAL_HEX8(0x02, sent[4][0]);
     TEST_ASSERT_EQUAL_HEX8(0x00, sent[5][0]);
     for (const auto &r: sent) {
@@ -339,18 +458,132 @@ static void test_full_chain_gestures_to_hid_reports_via_fanout() {
     for (int i = 0; i < 20; ++i) feed(0, 0, 0);
     for (int i = 0; i < 5; ++i) feed(0, 3.0f, 0); // move right
     for (int i = 0; i < 20; ++i) feed(0, 0, 0);
-    for (int i = 0; i < 50; ++i) feed(0, 0, 30.0f); // scroll up: 30 deg -> 47 units -> ~14.1 ticks/s (#1181)
+    // +Z rotation: 30 deg -> 47 units -> ~14.1 ticks/s (#1181). Chevron spec: +Z = scroll DOWN,
+    // so the HID wheel (+ = up) must be NEGATIVE.
+    for (int i = 0; i < 50; ++i) feed(0, 0, 30.0f);
 
     TEST_ASSERT_EQUAL_HEX8(0x01, sent.at(0)[0]);
     TEST_ASSERT_EQUAL_HEX8(0x00, sent.at(1)[0]);
-    TEST_ASSERT_EQUAL_INT(38, static_cast<int8_t>(sent.at(2)[1]));
+    // 3.0 m/s^2 through the quadratic curve (#1181): (3.0/3.3552)^2 * 127 = 101.5 -> 102.
+    TEST_ASSERT_EQUAL_INT(102, static_cast<int8_t>(sent.at(2)[1]));
     int wheel = 0;
     for (const auto &r: sent) wheel += static_cast<int8_t>(r[3]);
-    TEST_ASSERT_INT_WITHIN(1, 14, wheel);
+    TEST_ASSERT_INT_WITHIN(1, -14, wheel);
+    TEST_ASSERT_INT_WITHIN(1, 14, led.scrollTotal()); // the event stream itself stays yaw-signed
     // Every event reached both sinks.
     TEST_ASSERT_EQUAL_INT(1, led.count(Type::Down));
     TEST_ASSERT_EQUAL_INT(1, led.count(Type::Up));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(sent.size()), static_cast<int>(led.events.size()));
+}
+
+/**
+ * Pins the HID sign mapping (#1181, Edgar's final real-hardware instruction). Cursor: X passes
+ * straight through, Y is negated (HID only -- the LED display's own Y handling in
+ * FeedbackState::updateMotion is separate and unchanged). Wheel: derived from the
+ * hardware-confirmed chevron (MouseHidReportBuilder::onScroll).
+ *   calibratedX > 0 -> HID dx > 0 (cursor right)
+ *   calibratedX < 0 -> HID dx < 0 (cursor left)
+ *   calibratedY > 0 -> HID dy < 0
+ *   calibratedY < 0 -> HID dy > 0
+ *   +Z rotation  (calibratedYaw > 0) -> HID wheel < 0 (scroll DOWN), matching the chevron (-1)
+ *   -Z rotation  (calibratedYaw < 0) -> HID wheel > 0 (scroll UP),   matching the chevron (+1)
+ */
+static void test_hid_sign_mapping_matches_confirmed_display_sense() {
+    struct Chain {
+        std::vector<MouseHidReport> sent;
+        MouseHidReportBuilder builder{[this](const MouseHidReport &r) { sent.push_back(r); }};
+        uint32_t now{0};
+        FeedbackState feedback{[this] { return now; }};
+        MouseEventFanout fanout;
+        Mouse mouse;
+        Calibration calibration;
+        GestureDetector detector{mouse, calibration, &fanout};
+        uint32_t t{0};
+
+        Chain() {
+            fanout.addSink(&builder);
+            fanout.addSink(&feedback);
+            for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES + Calibration::SETTLING_SAMPLES; ++i) {
+                feed(0, 0, 0);
+            }
+            sent.clear();
+        }
+
+        void feed(const float ax, const float ay, const float yaw) {
+            MotionSample s{};
+            s.accel = {ax, ay, 9.8f};
+            s.yaw = yaw;
+            s.timestampMs = t;
+            t += 20;
+            now = t;
+            detector.process(s);
+            feedback.updateMotion(calibration.calibratedTiltX(), calibration.calibratedTiltY(),
+                                  mouse.isScrollWheelActive() ? mouse.getAngle() : static_cast<int8_t>(0));
+        }
+
+        int sumDx() const {
+            int v = 0;
+            for (const auto &r: sent) v += static_cast<int8_t>(r[1]);
+            return v;
+        }
+
+        int sumDy() const {
+            int v = 0;
+            for (const auto &r: sent) v += static_cast<int8_t>(r[2]);
+            return v;
+        }
+
+        int sumWheel() const {
+            int v = 0;
+            for (const auto &r: sent) v += static_cast<int8_t>(r[3]);
+            return v;
+        }
+    };
+
+    {
+        Chain c; // tilt right only
+        for (int i = 0; i < 5; ++i) c.feed(+3.0f, 0, 0);
+        TEST_ASSERT_GREATER_THAN_INT(0, c.sumDx());
+        TEST_ASSERT_EQUAL_INT(0, c.sumDy());
+        TEST_ASSERT_EQUAL_INT(0, c.sumWheel());
+        TEST_ASSERT_GREATER_THAN_FLOAT(0.0f, c.feedback.snapshot().tiltX); // ball right, same sense
+    }
+    {
+        Chain c; // tilt left only
+        for (int i = 0; i < 5; ++i) c.feed(-3.0f, 0, 0);
+        TEST_ASSERT_LESS_THAN_INT(0, c.sumDx());
+        TEST_ASSERT_EQUAL_INT(0, c.sumDy());
+    }
+    {
+        Chain c; // calibratedY > 0 only
+        for (int i = 0; i < 5; ++i) c.feed(0, +3.0f, 0);
+        TEST_ASSERT_EQUAL_INT(0, c.sumDx());
+        TEST_ASSERT_LESS_THAN_INT(0, c.sumDy()); // HID Y negated
+        TEST_ASSERT_LESS_THAN_FLOAT(0.0f, c.feedback.snapshot().tiltY); // ball toward top row (LED convention, unchanged)
+    }
+    {
+        Chain c; // calibratedY < 0 only
+        for (int i = 0; i < 5; ++i) c.feed(0, -3.0f, 0);
+        TEST_ASSERT_GREATER_THAN_INT(0, c.sumDy()); // HID Y negated
+    }
+    {
+        Chain c; // +Z rotation
+        for (int i = 0; i < 50; ++i) c.feed(0, 0, +30.0f);
+        TEST_ASSERT_EQUAL_INT(-1, c.feedback.snapshot().scrollDirection); // confirmed chevron: DOWN
+        TEST_ASSERT_LESS_THAN_INT(0, c.sumWheel()); // HID wheel: DOWN, agrees with the chevron
+        TEST_ASSERT_EQUAL_INT(0, c.sumDx());
+        TEST_ASSERT_EQUAL_INT(0, c.sumDy());
+    }
+    {
+        Chain c; // -Z rotation
+        for (int i = 0; i < 50; ++i) c.feed(0, 0, -30.0f);
+        TEST_ASSERT_EQUAL_INT(+1, c.feedback.snapshot().scrollDirection); // confirmed chevron: UP
+        TEST_ASSERT_GREATER_THAN_INT(0, c.sumWheel()); // HID wheel: UP
+    }
+    // Negation never overflows int8_t.
+    TEST_ASSERT_EQUAL_INT(127, MouseHidReportBuilder::hidWheelFromTicks(INT8_MIN));
+    TEST_ASSERT_EQUAL_INT(-127, MouseHidReportBuilder::hidWheelFromTicks(127));
+    TEST_ASSERT_EQUAL_INT(1, MouseHidReportBuilder::hidWheelFromTicks(-1));
 }
 
 int main() {
@@ -364,6 +597,9 @@ int main() {
     RUN_TEST(test_release_lockout_blocks_immediate_re_press);
     RUN_TEST(test_no_on_device_double_click);
     RUN_TEST(test_movement_deltas_follow_calibrated_tilt_with_hysteresis);
+    RUN_TEST(test_movement_acceleration_curve_shape);
+    RUN_TEST(test_movement_curve_preserves_sign_on_both_axes);
+    RUN_TEST(test_movement_full_scale_matches_ball_full_scale);
     RUN_TEST(test_scroll_ticks_have_direction_and_rate);
     RUN_TEST(test_scroll_engage_disengage_has_a_real_deadzone);
     RUN_TEST(test_scroll_engage_disengage_thresholds_match_mouse_hysteresis);
@@ -372,5 +608,6 @@ int main() {
     RUN_TEST(test_hid_report_layout);
     RUN_TEST(test_report_builder_one_report_per_event_with_button_mask);
     RUN_TEST(test_full_chain_gestures_to_hid_reports_via_fanout);
+    RUN_TEST(test_hid_sign_mapping_matches_confirmed_display_sense);
     return UNITY_END();
 }

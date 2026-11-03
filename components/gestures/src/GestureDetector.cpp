@@ -26,6 +26,11 @@ namespace Hilton {
         }
 
         // Use calibrated yaw (orientation Z) for the scroll wheel. Clamp before the narrowing cast.
+        // NOTE: the sign is deliberately NOT flipped here (nor on the emitted ticks below): both
+        // mouse.getAngle() (-> FeedbackState::updateMotion) and the ticks (-> FeedbackState::onScroll
+        // via the event fan-out) feed the hardware-confirmed scroll chevron, which assumes they
+        // share calibratedYaw's sign. The HID wheel sign correction lives in the HID transport
+        // only -- see MouseHidReportBuilder::onScroll (MouseHidReport.hpp).
         mouse.setAngle(Mouse::saturateToReport(SCROLL_SCALE * calibratedYaw));
 
         if (!mouse.isScrollWheelActive()) {
@@ -103,14 +108,35 @@ namespace Hilton {
         return false;
     }
 
+    int8_t GestureDetector::movementDeltaFromTilt(const float tilt) {
+        float n = std::abs(tilt) / MOVEMENT_FULL_SCALE_TILT;
+        if (!(n > 0.0f)) {
+            return 0; // zero or NaN
+        }
+        if (n > 1.0f) {
+            n = 1.0f;
+        }
+        // Magnitude only (always >= 0), so the power can never flip or drop the sign.
+        const float magnitude = std::round(std::pow(n, MOVEMENT_ACCEL_EXPONENT) * Mouse::REPORT_MAX);
+        return Mouse::saturateToReport(tilt < 0.0f ? -magnitude : magnitude);
+    }
+
     bool GestureDetector::handleMouseMovement(const float calibratedX, const float calibratedY) {
         if (mouse.isScrollWheelActive()) {
             return false;
         }
 
-        // Clamp to the report range BEFORE narrowing to int8_t (see Mouse::saturateToReport).
-        mouse.updateMovement(Mouse::saturateToReport(GRAVITY_SCALE * calibratedX),
-                             Mouse::saturateToReport(GRAVITY_SCALE * calibratedY));
+        // HID cursor sign mapping (#1181, Edgar's explicit final instruction after real-hardware
+        // testing, 2026-11-02):
+        //   X: calibratedX -> dx unchanged.
+        //   Y: calibratedY -> dy NEGATED.
+        // Scoped to the HID movement deltas only. The LED display's Y handling
+        // (FeedbackState::updateMotion, state.tiltY = -tiltY) is a separate path, independently
+        // confirmed correct, and must not be changed to match or compensate for this. Mouse's
+        // hysteresis and the idle check use magnitude only; movementDeltaFromTilt curves the
+        // magnitude and preserves the sign it is given.
+        mouse.updateMovement(movementDeltaFromTilt(calibratedX),
+                             movementDeltaFromTilt(-calibratedY));
 
         if (mouse.isMoving() && sink != nullptr) {
             const auto &m = mouse.getMovement();
@@ -184,6 +210,8 @@ namespace Hilton {
         // absorbed), not moving, not scrolling, and both calibrated signals below their START
         // thresholds. Unchanged from the original code (now just two independently-computed
         // flags instead of one shared bool -- see Calibration::adapt()'s doc comment).
+        // Deliberately still the LINEAR GRAVITY_SCALE magnitude, not the HID acceleration curve
+        // (movementDeltaFromTilt): idle detection semantics are independent of cursor feel.
         const float tiltUnits = std::hypot(GRAVITY_SCALE * tiltX, GRAVITY_SCALE * tiltY);
         const float yawUnits = std::abs(SCROLL_SCALE * yaw);
         const bool tiltIdle = !anyButtonPressed()

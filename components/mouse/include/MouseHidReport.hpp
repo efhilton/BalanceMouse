@@ -75,11 +75,29 @@ namespace Hilton {
             send(dx, dy, 0);
         }
 
+        /**
+         * HID wheel sign mapping -- REASONED HYPOTHESIS, NOT YET VERIFIED (#1181, 2026-11-02).
+         * HID has NOT yet been tested against a real paired host; pending Edgar's test.
+         *
+         * Incoming ticks share calibratedYaw's sign (+ = physical +Z rotation; see
+         * MouseEventSink::onScroll). Edgar's confirmed chevron spec maps +Z -> scroll DOWN
+         * (FeedbackState::snapshot/onScroll). HID wheel convention is + = scroll UP, so the
+         * wheel byte is the NEGATED tick count, making the real wheel agree with the chevron.
+         * Done here, in the HID transport only, because GestureDetector's angle/ticks also feed
+         * the already-confirmed LED chevron, which must not change. (OS "natural scrolling"
+         * settings can still invert this on the host.) If Edgar's test shows the wheel opposite
+         * to the chevron, remove this negation.
+         */
         void onScroll(const int8_t ticks) override {
             if (ticks == 0) {
                 return;
             }
-            send(0, 0, ticks);
+            send(0, 0, hidWheelFromTicks(ticks));
+        }
+
+        /** Yaw-signed ticks -> HID wheel value (negated; -128 saturates to +127, no overflow). */
+        static int8_t hidWheelFromTicks(const int8_t ticks) {
+            return ticks == INT8_MIN ? static_cast<int8_t>(INT8_MAX) : static_cast<int8_t>(-ticks);
         }
 
         [[nodiscard]] uint8_t getButtonMask() const { return buttons; }

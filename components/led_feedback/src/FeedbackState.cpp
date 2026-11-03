@@ -66,8 +66,8 @@ namespace Hilton {
         // ballPosition(): that is a pure, axis-symmetric mapping shared by both axes (its own
         // tests rely on that), and FeedbackSnapshot::tiltX/Y are documented as display-space.
         // Likewise keep any such correction scoped to this display path -- GestureDetector's HID
-        // movement (handleMouseMovement) consumes the same calibratedTiltX/Y independently, and
-        // its sign is still unverified on real hardware (HID transport stays disabled, #1181).
+        // movement (handleMouseMovement) consumes the same calibratedTiltX/Y independently and
+        // has its own, separately confirmed sign mapping (#1181).
         state.tiltX = tiltX;
         state.tiltY = -tiltY;
         scrollAngle = angle;
@@ -101,7 +101,7 @@ namespace Hilton {
             // respectively, hence the flip here rather than the naive angle>0 -> +1 mapping.
             // Does not touch the actual HID wheel tick value/sign anywhere (GestureDetector,
             // Mouse) -- this is a display-only mapping, scoped to exactly what was asked:
-            // verify the gesture via the chevron, independent of the still-disabled HID output.
+            // verify the gesture via the chevron, independent of the HID output.
             s.scrollDirection = scrollAngle > 0 ? -1 : 1;
             s.scrollMagnitude = static_cast<uint8_t>(std::abs(static_cast<int>(scrollAngle)));
         } else if (hasTick && (now - lastTickMs) < SCROLL_HOLD_MS) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <MotionSample.hpp>
+#include <cstdint>
 
 namespace Hilton {
     /**
@@ -98,6 +99,30 @@ namespace Hilton {
          */
         static constexpr float MAX_SEED_GYRO_DPS{5.0f};
 
+        /**
+         * Gyro-Z bias compensation for the yaw baseline (#1181, Edgar: "scroll should be based
+         * on the absolute angle... on at abs(10+), off at abs(5)" -- not repeatable on hardware).
+         *
+         * The driver's yaw (Qmi8658C orientation.z) integrates raw gyro Z with no bias removal,
+         * so at rest it ramps at the gyro's zero-rate offset -- measured live on the real board:
+         * gyroZ = 0.5-0.6 dps at rest. Before this fix the yaw baseline only followed that ramp
+         * through the idle EMA, and an EMA chasing a ramp of rate r lags it by exactly r * tau:
+         * calibratedYaw sat at a constant ~+2.6 deg on a board nobody was touching (confirmed in
+         * the live VERIFY log), shifting the 10/5 deg Schmitt trigger to ~7.4/2.4 deg one way and
+         * ~12.6/7.6 deg the other. Worse, the baseline is (by design) frozen while scrolling, so
+         * every engaged second added another ~0.55 deg: after a 10 s scroll the "off" point in
+         * the drift direction had moved past the user's own starting position. Same hand
+         * motion, different outcome, depending on direction and how long the previous scroll
+         * lasted.
+         *
+         * Fix: estimate the zero-rate offset (deg/s) from the gyro Z of the same resting samples
+         * that seed the baselines, then advance the yaw baseline along that drift EVERY sample
+         * (scrolling or not), so calibratedYaw measures real rotation only. The estimate keeps
+         * refining slowly (this time constant) only while yaw is idle AND the gyro is quiet
+         * (|gyroZ| <= MAX_SEED_GYRO_DPS, the seeding criterion), to follow thermal bias drift.
+         */
+        static constexpr float YAW_RATE_BIAS_TIME_CONSTANT_S{30.0f};
+
         explicit Calibration(float tiltTimeConstantS = DEFAULT_TILT_TIME_CONSTANT_S,
                              float yawTimeConstantS = DEFAULT_YAW_TIME_CONSTANT_S,
                              int warmupSamples = DEFAULT_WARMUP_SAMPLES);
@@ -152,6 +177,9 @@ namespace Hilton {
          */
         void snapYawToRaw();
 
+        /** Current gyro-Z zero-rate offset estimate, deg/s (see YAW_RATE_BIAS_TIME_CONSTANT_S). */
+        [[nodiscard]] float yawRateBiasDps() const { return yawRateBias; }
+
         [[nodiscard]] bool isSeeded() const { return seeded; }
 
         /** Number of observed samples that were rejected before seeding (warm-up + implausible). */
@@ -193,6 +221,9 @@ namespace Hilton {
         float settleSumTiltX{0};
         float settleSumTiltY{0};
         float settleSumYaw{0};
+        float settleSumGyroZ{0};
+        float settleSumT{0}; ///< Sum of (sample time - first settling sample time), seconds.
+        uint32_t settleFirstMs{0};
 
         float tiltX{0};
         float tiltY{0};
@@ -201,5 +232,8 @@ namespace Hilton {
         float rawTiltX{0};
         float rawTiltY{0};
         float rawYaw{0};
+        float rawGyroZ{0};
+
+        float yawRateBias{0}; ///< deg/s, see YAW_RATE_BIAS_TIME_CONSTANT_S.
     };
 } // namespace Hilton

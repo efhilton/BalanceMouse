@@ -23,10 +23,18 @@ namespace Hilton {
 
         virtual void onButtonUp(Button button) = 0;
 
-        /** Relative cursor motion for this sample; HID convention (+x right, +y down). */
+        /**
+         * Relative cursor motion for this sample; HID convention (+x right, +y down).
+         * GestureDetector::handleMouseMovement maps calibratedX -> dx unchanged and
+         * calibratedY -> dy negated (#1181, Edgar's final real-hardware instruction).
+         */
         virtual void onMovement(int8_t dx, int8_t dy) = 0;
 
-        /** Whole wheel ticks for this sample; HID convention (+ = scroll up / away from user). */
+        /**
+         * Whole wheel ticks for this sample. Sign follows calibratedYaw (+ = physical +Z
+         * rotation), NOT the HID wheel convention: FeedbackState relies on that. The HID
+         * transport converts to HID's "+ = scroll up" in MouseHidReportBuilder::onScroll.
+         */
         virtual void onScroll(int8_t ticks) = 0;
     };
 

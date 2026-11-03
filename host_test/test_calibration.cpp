@@ -684,6 +684,134 @@ static void test_rezero_during_warmup_does_not_seed_from_garbage() {
     TEST_ASSERT_EQUAL_INT(0, static_cast<int>(rig.sink.events.size()));
 }
 
+
+// ---------------- Gyro-Z bias drift vs the scroll Schmitt trigger (#1181) ----------------
+
+/**
+ * Models the real driver yaw: Qmi8658C integrates raw gyro Z with NO bias removal, so the yaw
+ * the detector sees ramps at the gyro's zero-rate offset even at rest (live board: gyroZ =
+ * 0.5-0.6 dps at rest, calibratedYaw parked at a constant +2.62 deg in the VERIFY log). Unlike
+ * the rest of the suite, which sets rig.yaw directly with gz = 0, here every step integrates
+ * (realRate + bias) into rig.yaw and reports it as gz, exactly as the hardware does.
+ */
+struct DriftingBoard {
+    Rig &rig;
+    float bias;
+    float trueYaw{0}; ///< Real board rotation about Z, degrees.
+
+    void step(const float realRateDps) {
+        const float measured = realRateDps + bias;
+        rig.gz = measured;
+        rig.yaw += measured * (static_cast<float>(Rig::PERIOD_MS) / 1000.0f);
+        trueYaw += realRateDps * (static_cast<float>(Rig::PERIOD_MS) / 1000.0f);
+        rig.step();
+    }
+
+    void hold(const uint32_t ms) {
+        for (uint32_t t = 0; t < ms; t += Rig::PERIOD_MS) step(0.0f);
+    }
+
+    /** Hand twist to an absolute real angle at roughly `dps`. */
+    void twistTo(const float targetDeg, const float dps = 60.0f) {
+        const float delta = targetDeg - trueYaw;
+        const float perStep = dps * (static_cast<float>(Rig::PERIOD_MS) / 1000.0f);
+        const int n = static_cast<int>(std::ceil(std::abs(delta) / perStep));
+        if (n == 0) return;
+        const float rate = delta / (static_cast<float>(n) * static_cast<float>(Rig::PERIOD_MS) / 1000.0f);
+        for (int i = 0; i < n; ++i) step(rate);
+        trueYaw = targetDeg; // kill float residue
+    }
+
+    /** Power on at rest: warm-up + settling, with the yaw drifting the whole time. */
+    void boot() {
+        for (int i = 0; i < Calibration::DEFAULT_WARMUP_SAMPLES + Calibration::SETTLING_SAMPLES + 1; ++i) step(0.0f);
+        TEST_ASSERT_TRUE(rig.calibration.isSeeded());
+    }
+};
+
+/**
+ * Edgar (#1181): "It should be based on the absolute angle... comes on at abs(10+), turns off at
+ * abs(5)... I can't repeatably turn it on/off as I rotate around the Z axis." Repeated,
+ * identical engage/hold/disengage cycles in BOTH directions with short idle pauses between,
+ * on a board with the real measured gyro-Z bias. Before the fix: calibratedYaw idles at
+ * bias * tau (~2.75 deg), so an 8.5 deg twist engages in the drift direction, and the frozen
+ * baseline during each 10 s scroll adds ~5.5 deg more, so returning to 2 deg doesn't turn it off.
+ */
+static void run_repeatable_scroll_cycles_with_gyro_bias(const float bias) {
+    Rig rig;
+    DriftingBoard board{rig, bias};
+    board.boot();
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.3f, 0.0f, rig.detector.getCalibratedYaw(),
+                                     "seeded yaw must start at zero, not bias * (settling window / 2) behind");
+    board.hold(30000);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.3f, 0.0f, rig.detector.getCalibratedYaw(),
+                                     "a resting board must read ~0 yaw, not a standing bias * tau offset");
+
+    for (int cycle = 0; cycle < 6; ++cycle) {
+        const float dir = (cycle % 2 == 0) ? 1.0f : -1.0f;
+        char msg[96];
+
+        board.twistTo(dir * 8.5f);
+        board.hold(500);
+        snprintf(msg, sizeof msg, "cycle %d dir %+.0f: 8.5 deg must NOT engage", cycle, dir);
+        TEST_ASSERT_FALSE_MESSAGE(rig.mouse.isScrollWheelActive(), msg);
+
+        board.twistTo(dir * 14.0f);
+        board.hold(500);
+        snprintf(msg, sizeof msg, "cycle %d dir %+.0f: 14 deg must engage", cycle, dir);
+        TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), msg);
+        board.hold(10000); // a real 10 s scroll
+
+        board.twistTo(dir * 8.0f);
+        board.hold(500);
+        snprintf(msg, sizeof msg, "cycle %d dir %+.0f: 8 deg (deadzone) must stay engaged", cycle, dir);
+        TEST_ASSERT_TRUE_MESSAGE(rig.mouse.isScrollWheelActive(), msg);
+
+        board.twistTo(dir * 2.0f);
+        board.hold(500);
+        snprintf(msg, sizeof msg, "cycle %d dir %+.0f: 2 deg must disengage", cycle, dir);
+        TEST_ASSERT_FALSE_MESSAGE(rig.mouse.isScrollWheelActive(), msg);
+
+        board.twistTo(0.0f);
+        board.hold(2000); // short idle pause before the next attempt
+    }
+}
+
+static void test_scroll_toggle_is_repeatable_with_positive_gyro_bias() {
+    run_repeatable_scroll_cycles_with_gyro_bias(0.55f); // the live board's measured offset
+}
+
+static void test_scroll_toggle_is_repeatable_with_negative_gyro_bias() {
+    run_repeatable_scroll_cycles_with_gyro_bias(-0.55f);
+}
+
+/** A long engaged scroll must not accumulate the gyro bias (baseline is frozen while scrolling). */
+static void test_long_scroll_hold_does_not_accumulate_gyro_bias() {
+    Rig rig;
+    DriftingBoard board{rig, 0.55f};
+    board.boot();
+    board.twistTo(-12.0f);
+    board.hold(30000);
+    TEST_ASSERT_TRUE(rig.mouse.isScrollWheelActive());
+    TEST_ASSERT_FLOAT_WITHIN(0.3f, -12.0f, rig.detector.getCalibratedYaw());
+    board.twistTo(0.0f);
+    board.hold(200);
+    TEST_ASSERT_FALSE(rig.mouse.isScrollWheelActive());
+    TEST_ASSERT_FLOAT_WITHIN(0.3f, 0.0f, rig.detector.getCalibratedYaw());
+}
+
+/** The bias estimate follows a slow (thermal) change of the zero-rate offset while idle. */
+static void test_gyro_bias_estimate_tracks_slow_change_while_idle() {
+    Rig rig;
+    DriftingBoard board{rig, 0.55f};
+    board.boot();
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.55f, rig.calibration.yawRateBiasDps());
+    board.bias = 0.9f;
+    board.hold(180000);
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.9f, rig.calibration.yawRateBiasDps());
+    TEST_ASSERT_FLOAT_WITHIN(0.3f, 0.0f, rig.detector.getCalibratedYaw());
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0); // keep Unity output even if a sanitizer aborts the run
     UNITY_BEGIN();
@@ -707,5 +835,9 @@ int main() {
     RUN_TEST(test_yaw_baseline_self_corrects_drift_even_while_scroll_latched_active);
     RUN_TEST(test_rezero_during_warmup_does_not_seed_from_garbage);
     RUN_TEST(test_seeding_while_still_being_handled_is_rejected_until_genuinely_still);
+    RUN_TEST(test_scroll_toggle_is_repeatable_with_positive_gyro_bias);
+    RUN_TEST(test_scroll_toggle_is_repeatable_with_negative_gyro_bias);
+    RUN_TEST(test_long_scroll_hold_does_not_accumulate_gyro_bias);
+    RUN_TEST(test_gyro_bias_estimate_tracks_slow_change_while_idle);
     return UNITY_END();
 }

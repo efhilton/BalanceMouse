@@ -24,6 +24,7 @@ namespace Hilton {
         rawTiltX = sample.accel.x;
         rawTiltY = sample.accel.y;
         rawYaw = sample.yaw;
+        rawGyroZ = sample.gyro.z;
         if (seeded) {
             return;
         }
@@ -46,16 +47,27 @@ namespace Hilton {
             settleSumTiltX = 0.0f;
             settleSumTiltY = 0.0f;
             settleSumYaw = 0.0f;
+            settleSumGyroZ = 0.0f;
+            settleSumT = 0.0f;
+            settleFirstMs = sample.timestampMs;
         }
+        const float tRel = static_cast<float>(sample.timestampMs - settleFirstMs) / 1000.0f;
         ++settleSampleCount;
         settleSumTiltX += sample.accel.x;
         settleSumTiltY += sample.accel.y;
         settleSumYaw += sample.yaw;
+        settleSumGyroZ += sample.gyro.z;
+        settleSumT += tRel;
         if (settleSampleCount >= SETTLING_SAMPLES) {
             const float n = static_cast<float>(settleSampleCount);
             tiltX = settleSumTiltX / n;
             tiltY = settleSumTiltY / n;
-            yaw = settleSumYaw / n;
+            // Gyro-Z zero-rate offset (see YAW_RATE_BIAS_TIME_CONSTANT_S). The averaged yaw is
+            // where the drifting raw yaw was at the window's mean time, not now: carry it
+            // forward along the drift to this sample, or a ~10 s window would start the
+            // baseline bias * ~5 s behind (~2.6 deg on the real board).
+            yawRateBias = settleSumGyroZ / n;
+            yaw = settleSumYaw / n + yawRateBias * (tRel - settleSumT / n);
             seeded = true;
         }
     }
@@ -80,9 +92,19 @@ namespace Hilton {
             tiltX += aTilt * (rawTiltX - tiltX);
             tiltY += aTilt * (rawTiltY - tiltY);
         }
+        // Follow the gyro-Z bias drift of the raw yaw every sample, idle or not (see
+        // YAW_RATE_BIAS_TIME_CONSTANT_S): this is the sensor's zero-rate ramp, not a gesture,
+        // so it must not accumulate into calibratedYaw -- in particular not while scrolling,
+        // when the EMA below is (correctly) frozen.
+        if (dtSeconds > 0.0f) {
+            yaw += yawRateBias * dtSeconds;
+        }
         if (yawIdle) {
             const float aYaw = emaAlpha(dtSeconds, yawTau);
             yaw += aYaw * (rawYaw - yaw);
+            if (std::abs(rawGyroZ) <= MAX_SEED_GYRO_DPS) {
+                yawRateBias += emaAlpha(dtSeconds, YAW_RATE_BIAS_TIME_CONSTANT_S) * (rawGyroZ - yawRateBias);
+            }
         }
     }
 

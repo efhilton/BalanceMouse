@@ -26,7 +26,53 @@ namespace Hilton {
         // --- Thresholds carried over from the original MouseEventDetector ---
         static constexpr float GYRO_PRESS_THRESHOLD_DPS{100.0f};
         static constexpr uint32_t RELEASE_LOCKOUT_MS{300};
-        static constexpr float GRAVITY_SCALE{127.0f / 9.8f}; // m/s^2 -> report units
+        /**
+         * m/s^2 -> report units, LINEAR. No longer used for the HID movement deltas (see
+         * movementDeltaFromTilt()); still used, deliberately unchanged, for the idle/adapt
+         * magnitude gate in process() so calibration idle detection behaves exactly as before.
+         */
+        static constexpr float GRAVITY_SCALE{127.0f / 9.8f};
+
+        /**
+         * HID movement acceleration curve (#1181, Edgar: "the further we are away from the
+         * center, the more 'acceleration' the mouse should see"). FEEL-TUNING STARTING POINT,
+         * NOT a derived or hardware-confirmed value -- both the full-scale angle and the
+         * exponent are expected to be adjusted (together) after Edgar tries it on a real host.
+         * Affects ONLY the HID movement deltas: the LED ball (a position indicator), the scroll
+         * wheel and the idle/adapt gate are all unaffected. See movementDeltaFromTilt().
+         *
+         * Tilt angle (degrees) at which the cursor reaches full speed (report 127). Reuses the
+         * device's established "full tilt" angle, FeedbackRenderer::BALL_FULL_SCALE_TILT_DEG
+         * (the LED ball reaches the matrix edge at the same tilt), so ball-at-edge and
+         * cursor-at-full-speed coincide. Duplicated rather than shared because led_feedback
+         * does not (and should not need to) depend on the gestures component;
+         * test_movement_full_scale_matches_ball_full_scale (host_test) fails if the two drift
+         * apart -- change them together, or deliberately decouple them and update that test.
+         */
+        static constexpr float MOVEMENT_FULL_SCALE_TILT_DEG{20.0f};
+        /**
+         * m/s^2 equivalent of MOVEMENT_FULL_SCALE_TILT_DEG: STANDARD_GRAVITY_MS2 * sin(20 deg)
+         * = 9.81 * 0.34202 = 3.3552 (same derivation as FeedbackRenderer::BALL_FULL_SCALE_TILT).
+         * Recompute if MOVEMENT_FULL_SCALE_TILT_DEG changes (guarded by host_test).
+         */
+        static constexpr float MOVEMENT_FULL_SCALE_TILT{3.3552f};
+        /**
+         * Response-curve exponent applied to the normalised tilt magnitude. 1.0 = linear (no
+         * acceleration); 2.0 = quadratic (default: half of full tilt -> 1/4 of full speed,
+         * fine control near centre); higher = even gentler centre and steeper edges. Judgment
+         * call, tune by feel.
+         */
+        static constexpr float MOVEMENT_ACCEL_EXPONENT{2.0f};
+
+        /**
+         * Maps ONE axis of calibrated tilt (m/s^2, signed) to an HID movement delta:
+         *   n     = clamp(|tilt| / MOVEMENT_FULL_SCALE_TILT, 0, 1)
+         *   delta = sign(tilt) * round(n ^ MOVEMENT_ACCEL_EXPONENT * 127)
+         * The curve is applied to the MAGNITUDE only and the sign multiplied back in afterwards
+         * (raising a signed value to a power would lose the sign for even exponents). Clamped
+         * via Mouse::saturateToReport. NaN -> 0. Pure, so directly testable.
+         */
+        [[nodiscard]] static int8_t movementDeltaFromTilt(float tilt);
         /** Z-rotation angle that saturates the scroll report range (-127..127). Tunable (#1181,
          * Edgar). Changing this moves Mouse::ANGLE_THRESHOLD_START/STOP's effective degree
          * meaning too -- see the derivation comment there and

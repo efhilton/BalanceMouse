@@ -4,12 +4,10 @@
 
 namespace Hilton {
     MouseEventDetector::MouseEventDetector(Mouse &mouse, MouseEventSink *sink, FeedbackState *feedback)
-        // Clicks run fully enabled again (#1181, Edgar, 2026-11-02): HID output is now disabled
-        // wholesale at the transport (see the commented-out events.addSink(&ble) in Main.cpp),
-        // so there is no longer a reason to also mute clicks here -- the point now is for every
-        // gesture, including clicks, to show up correctly on the LED display. GestureDetector's
-        // clicksEnabled ctor param (default true, unused below) is left in place in case clicks
-        // alone ever need muting again independent of the HID transport.
+        // Clicks run fully enabled (#1181): every gesture, including clicks, goes out over HID
+        // and shows up on the LED display. GestureDetector's clicksEnabled ctor param (default
+        // true, unused below) is left in place in case clicks alone ever need muting
+        // independent of the HID transport.
         : mouse(mouse), feedback(feedback), calibration(), detector(mouse, calibration, sink) {
     }
 
@@ -72,9 +70,10 @@ namespace Hilton {
             return;
         }
         seedLogged = true;
-        ESP_LOGI(TAG, "Calibration seeded after %d rejected samples: tilt baseline=(%.2f, %.2f) m/s^2, yaw baseline=%.2f",
+        ESP_LOGI(TAG, "Calibration seeded after %d rejected samples: tilt baseline=(%.2f, %.2f) m/s^2, yaw baseline=%.2f"
+                 " deg, gyroZ bias=%.3f dps",
                  calibration.samplesRejectedBeforeSeed(), calibration.tiltBaselineX(), calibration.tiltBaselineY(),
-                 calibration.yawBaseline());
+                 calibration.yawBaseline(), calibration.yawRateBiasDps());
     }
 
     void MouseEventDetector::logCalibratedTiltForVerification(const MotionSample &sample) {
